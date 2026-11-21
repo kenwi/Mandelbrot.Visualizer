@@ -9,7 +9,7 @@
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build",
-            "program": "${workspaceFolder}/src/bin/Debug/net10.0/Mandelbrot.dll",
+            "program": "${workspaceFolder}/src/bin/Debug/net11.0/Mandelbrot.dll",
             "args": [],
             "cwd": "${workspaceFolder}/src",
             "console": "internalConsole",
