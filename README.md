@@ -112,7 +112,7 @@ Pictures saved from the app go to `captures/`.
 | Action | Control |
 | --- | --- |
 | Pan | Drag, or the arrow keys |
-| Zoom | Mouse wheel. Double-click zooms in. Shift double-click zooms out |
+| Zoom | Mouse wheel. Hold Shift and Up to zoom in, Shift and Down to zoom out. Double-click zooms in. Shift double-click zooms out |
 | Power `n` | Slider, text box, or hold `[` and `]`. A tap steps by 0.1 |
 | Iterations | Slider, text box, or `-` and `+` |
 | Palette | Combo box, or `C` to cycle |

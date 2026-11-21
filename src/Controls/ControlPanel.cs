@@ -216,7 +216,9 @@ public sealed class ControlPanel
         RayGui.GuiLabel(Row(x, ref y, inner, 20), status);
 
         y += 6;
-        Raylib.DrawText("Drag pan   wheel zoom   double-click zoom", (int)x, (int)y, 14, new Color(150, 156, 170, 255));
+        Raylib.DrawText("Drag or arrows pan   wheel zoom", (int)x, (int)y, 14, new Color(150, 156, 170, 255));
+        y += 18;
+        Raylib.DrawText("Shift up/down zoom   double-click zoom", (int)x, (int)y, 14, new Color(150, 156, 170, 255));
         y += 18;
         Raylib.DrawText("hold [ ] power   - + iterations   C palette", (int)x, (int)y, 14, new Color(150, 156, 170, 255));
         y += 18;

@@ -273,10 +273,24 @@ public sealed class VisualizerHost : IDisposable
         }
 
         double nudge = _view.Scale * 0.02;
+        bool shift = Raylib.IsKeyDown(KeyboardKey.KEY_LEFT_SHIFT) || Raylib.IsKeyDown(KeyboardKey.KEY_RIGHT_SHIFT);
+        bool up = Raylib.IsKeyDown(KeyboardKey.KEY_UP);
+        bool down = Raylib.IsKeyDown(KeyboardKey.KEY_DOWN);
         if (Raylib.IsKeyDown(KeyboardKey.KEY_LEFT)) { _view.CenterX -= nudge * aspect; changed = true; Touch(); }
         if (Raylib.IsKeyDown(KeyboardKey.KEY_RIGHT)) { _view.CenterX += nudge * aspect; changed = true; Touch(); }
-        if (Raylib.IsKeyDown(KeyboardKey.KEY_UP)) { _view.CenterY += nudge; changed = true; Touch(); }
-        if (Raylib.IsKeyDown(KeyboardKey.KEY_DOWN)) { _view.CenterY -= nudge; changed = true; Touch(); }
+        if (shift && up != down)
+        {
+            double step = Math.Min(Raylib.GetFrameTime(), 0.05f);
+            double factor = Math.Pow(2.2, down ? step : -step);
+            _view.ZoomAt(canvasWidth * 0.5, canvasHeight * 0.5, canvasWidth, canvasHeight, factor);
+            changed = true;
+            Touch();
+        }
+        else
+        {
+            if (up) { _view.CenterY += nudge; changed = true; Touch(); }
+            if (down) { _view.CenterY -= nudge; changed = true; Touch(); }
+        }
 
         return changed;
     }
