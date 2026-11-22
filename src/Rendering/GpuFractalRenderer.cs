@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.InteropServices;
 using ZeroElectric.Vinculum;
 
 namespace Mandelbrot.Visualizer.Rendering;
@@ -37,6 +38,12 @@ public sealed class GpuFractalRenderer : IDisposable
 
     public bool IsAvailable { get; private set; }
     public bool HasImage { get; private set; }
+    public bool HasFrameTime { get; private set; }
+    public double LastFrameMs { get; private set; }
+
+    uint _query;
+    bool _queryRunning;
+    bool _timerFailed;
 
     public void Load()
     {
@@ -75,6 +82,8 @@ public sealed class GpuFractalRenderer : IDisposable
 
         EnsureTarget(width, height);
         SetUniforms(width, height, request);
+        PollGpuTime();
+        bool timing = BeginGpuTime();
 
         Raylib.BeginTextureMode(_target);
         Raylib.ClearBackground(new Color(4, 6, 12, 255));
@@ -82,6 +91,7 @@ public sealed class GpuFractalRenderer : IDisposable
         Raylib.DrawRectangle(0, 0, width, height, new Color(255, 255, 255, 255));
         Raylib.EndShaderMode();
         Raylib.EndTextureMode();
+        EndGpuTime(timing);
         HasImage = true;
 
         var source = new Rectangle { x = 0, y = 0, width = width, height = -height };
@@ -115,6 +125,12 @@ public sealed class GpuFractalRenderer : IDisposable
         {
             Raylib.UnloadShader(_shader);
             _shaderReady = false;
+        }
+
+        if (_query != 0)
+        {
+            DeleteQueries(1, ref _query);
+            _query = 0;
         }
 
         IsAvailable = false;
@@ -179,6 +195,98 @@ public sealed class GpuFractalRenderer : IDisposable
             return (int)rounded;
         return PolarExponent;
     }
+
+    void PollGpuTime()
+    {
+        if (_timerFailed || !_queryRunning)
+            return;
+
+        try
+        {
+            GetQueryObjectiv(_query, QueryResultAvailable, out int ready);
+            if (ready == 0)
+                return;
+
+            GetQueryObjectui64(_query, QueryResult, out ulong nanoseconds);
+            LastFrameMs = nanoseconds / 1_000_000.0;
+            HasFrameTime = true;
+            _queryRunning = false;
+        }
+        catch (DllNotFoundException)
+        {
+            _timerFailed = true;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            _timerFailed = true;
+        }
+    }
+
+    bool BeginGpuTime()
+    {
+        if (_timerFailed || _queryRunning)
+            return false;
+
+        try
+        {
+            if (_query == 0)
+                GenQueries(1, ref _query);
+            BeginQuery(TimeElapsed, _query);
+            return true;
+        }
+        catch (DllNotFoundException)
+        {
+            _timerFailed = true;
+            return false;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            _timerFailed = true;
+            return false;
+        }
+    }
+
+    void EndGpuTime(bool timing)
+    {
+        if (!timing)
+            return;
+
+        try
+        {
+            EndQuery(TimeElapsed);
+            _queryRunning = true;
+        }
+        catch (DllNotFoundException)
+        {
+            _timerFailed = true;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            _timerFailed = true;
+        }
+    }
+
+    const uint TimeElapsed = 0x88BF;
+    const uint QueryResult = 0x8866;
+    const uint QueryResultAvailable = 0x8867;
+
+    [DllImport("libGL.so.1", EntryPoint = "glGenQueries")]
+    static extern void GenQueries(int count, ref uint id);
+
+    [DllImport("libGL.so.1", EntryPoint = "glDeleteQueries")]
+    static extern void DeleteQueries(int count, ref uint id);
+
+    [DllImport("libGL.so.1", EntryPoint = "glBeginQuery")]
+    static extern void BeginQuery(uint target, uint id);
+
+    [DllImport("libGL.so.1", EntryPoint = "glEndQuery")]
+    static extern void EndQuery(uint target);
+
+    [DllImport("libGL.so.1", EntryPoint = "glGetQueryObjectiv")]
+    static extern void GetQueryObjectiv(uint id, uint name, out int param);
+
+    [DllImport("libGL.so.1", EntryPoint = "glGetQueryObjectui64v")]
+    static extern void GetQueryObjectui64(uint id, uint name, out ulong param);
 
     static void Split(double value, out float hi, out float lo)
     {

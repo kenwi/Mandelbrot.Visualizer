@@ -206,7 +206,7 @@ public static class MultibrotFormula
         return true;
     }
 
-    static Escape Escaped(int iteration, double radiusSquared, double power, double minRadiusSquared)
+    internal static Escape Escaped(int iteration, double radiusSquared, double power, double minRadiusSquared)
     {
         double logZn = 0.5 * Math.Log(radiusSquared);
         double logPower = Math.Log(Math.Abs(power));
@@ -216,9 +216,11 @@ public static class MultibrotFormula
         return new Escape(mu, Radius(minRadiusSquared));
     }
 
-    static Escape Inside(double minRadiusSquared) => new(-1f, Radius(minRadiusSquared));
+    internal static Escape Inside(double minRadiusSquared) => new(-1f, Radius(minRadiusSquared));
 
-    static float Radius(double radiusSquared)
+    internal static Escape Stopped(int iteration, double minRadiusSquared) => new(iteration, Radius(minRadiusSquared));
+
+    internal static float Radius(double radiusSquared)
     {
         if (radiusSquared == double.MaxValue || radiusSquared < 0) return 0f;
         return (float)Math.Sqrt(radiusSquared);

@@ -95,6 +95,7 @@ public sealed class ControlPanel
         double cursorIm,
         bool cursorValid,
         string status,
+        string? frameTime,
         out bool resetView,
         out bool saveImage)
     {
@@ -118,6 +119,20 @@ public sealed class ControlPanel
         if (Check(x, ref y, inner, "GPU shader", ref gpu))
         {
             settings.UseGpu = gpu;
+            changed = true;
+        }
+
+        bool simd = settings.UseSimd;
+        if (Check(x, ref y, inner, "SIMD", ref simd))
+        {
+            settings.UseSimd = simd;
+            changed = true;
+        }
+
+        bool showFrameTime = settings.ShowFrameTime;
+        if (Check(x, ref y, inner, "Frame time", ref showFrameTime))
+        {
+            settings.ShowFrameTime = showFrameTime;
             changed = true;
         }
 
@@ -214,6 +229,8 @@ public sealed class ControlPanel
         double zoom = 1.35 / Math.Max(view.Scale, FractalView.MinScale);
         RayGui.GuiLabel(Row(x, ref y, inner, 20), $"Zoom  {zoom:0.##}x    n = {settings.Power:0.####}");
         RayGui.GuiLabel(Row(x, ref y, inner, 20), status);
+        if (frameTime != null)
+            RayGui.GuiLabel(Row(x, ref y, inner, 20), $"Frame  {frameTime}");
 
         y += 6;
         Raylib.DrawText("Drag or arrows pan   wheel zoom", (int)x, (int)y, 14, new Color(150, 156, 170, 255));
@@ -222,7 +239,9 @@ public sealed class ControlPanel
         y += 18;
         Raylib.DrawText("hold [ ] power   - + iterations   C palette", (int)x, (int)y, 14, new Color(150, 156, 170, 255));
         y += 18;
-        Raylib.DrawText("R reset   J julia   G gpu   H panel   S save", (int)x, (int)y, 14, new Color(150, 156, 170, 255));
+        Raylib.DrawText("R reset   J julia   G gpu   V simd", (int)x, (int)y, 14, new Color(150, 156, 170, 255));
+        y += 18;
+        Raylib.DrawText("H panel   S save", (int)x, (int)y, 14, new Color(150, 156, 170, 255));
 
         return changed;
     }

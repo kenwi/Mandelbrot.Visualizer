@@ -21,6 +21,8 @@ public sealed class VisualizerSettings
     public double JuliaRe { get; set; } = -0.8;
     public double JuliaIm { get; set; } = 0.156;
     public bool UseGpu { get; set; } = true;
+    public bool UseSimd { get; set; }
+    public bool ShowFrameTime { get; set; }
 
     public void CyclePalette() => Palette = (Palette + 1) % Coloring.Palette.Count;
 

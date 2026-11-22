@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Numerics;
 using Mandelbrot.Visualizer.Coloring;
 using Mandelbrot.Visualizer.Controls;
+using Mandelbrot.Visualizer.Formula;
 using Mandelbrot.Visualizer.Rendering;
 using Mandelbrot.Visualizer.Viewport;
 using ZeroElectric.Vinculum;
@@ -90,6 +91,7 @@ public sealed class VisualizerHost : IDisposable
                 cursorIm,
                 cursorOnCanvas,
                 StatusLine(gpu),
+                FrameTimeText(gpu),
                 out bool resetView,
                 out bool saveImage);
 
@@ -234,6 +236,12 @@ public sealed class VisualizerHost : IDisposable
             changed = true;
         }
 
+        if (Raylib.IsKeyPressed(KeyboardKey.KEY_V))
+        {
+            _settings.UseSimd = !_settings.UseSimd;
+            changed = true;
+        }
+
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_H))
             _panel.Visible = !_panel.Visible;
 
@@ -319,6 +327,7 @@ public sealed class VisualizerHost : IDisposable
             _settings.Julia,
             _settings.JuliaRe,
             _settings.JuliaIm,
+            _settings.UseSimd,
             finalQuality);
 
         if (_hasSubmitted && request == _submitted) return;
@@ -337,14 +346,19 @@ public sealed class VisualizerHost : IDisposable
 
     void DrawHud()
     {
-        string device = UsingGpu() ? "GPU" : "CPU";
+        string device = UsingGpu() ? "GPU" : UsingSimd() ? "CPU SIMD" : "CPU";
         Raylib.DrawText($"n = {_settings.Power.ToString("0.####", CultureInfo.InvariantCulture)}    iter {_settings.MaxIterations}    {device}", 16, 16, 20, new Color(230, 232, 238, 255));
         Raylib.DrawText("H shows the panel", 16, 42, 16, new Color(170, 176, 188, 255));
+        int hudY = 66;
         if (_hasCursor)
         {
             _view.ScreenToComplex(_lastCursor.X, _lastCursor.Y, Raylib.GetScreenWidth(), Raylib.GetScreenHeight(), out double re, out double im);
-            Raylib.DrawText($"{re:0.######}  {(im >= 0 ? "+" : "-")} {Math.Abs(im):0.######} i", 16, 66, 16, new Color(170, 176, 188, 255));
+            Raylib.DrawText($"{re:0.######}  {(im >= 0 ? "+" : "-")} {Math.Abs(im):0.######} i", 16, hudY, 16, new Color(170, 176, 188, 255));
+            hudY += 22;
         }
+
+        if (_settings.ShowFrameTime && TryFrameTime(UsingGpu(), out double frameMs))
+            Raylib.DrawText($"Frame  {FormatFrameTime(frameMs)}", 16, hudY, 16, new Color(170, 176, 188, 255));
     }
 
     void SaveImage()
@@ -365,11 +379,52 @@ public sealed class VisualizerHost : IDisposable
             return "No shader, using CPU";
         if (gpu)
             return $"GPU    {fps} fps";
+        if (_settings.UseSimd && !SimdMultibrot.IsSupported)
+            return "No SIMD, using CPU";
+
+        bool simd = UsingSimd();
+        string name = simd ? "CPU SIMD" : "CPU";
         if (_settings.UseGpu && _settings.Mode == ColoringMode.Histogram)
-            return $"CPU histogram    {fps} fps";
+            return $"{(simd ? "SIMD" : "CPU")} histogram    {fps} fps";
         if (_renderer.IsBusy)
-            return "CPU rendering...";
-        return $"CPU    {fps} fps";
+            return simd ? "SIMD rendering..." : "CPU rendering...";
+        return $"{name}    {fps} fps";
+    }
+
+    bool UsingSimd() => _settings.UseSimd && SimdMultibrot.IsSupported;
+
+    string? FrameTimeText(bool gpu)
+    {
+        if (!_settings.ShowFrameTime)
+            return null;
+        return TryFrameTime(gpu, out double ms) ? FormatFrameTime(ms) : "...";
+    }
+
+    bool TryFrameTime(bool gpu, out double milliseconds)
+    {
+        if (gpu && _gpu.HasFrameTime)
+        {
+            milliseconds = _gpu.LastFrameMs;
+            return true;
+        }
+
+        if (!gpu && _renderer.HasFrameTime)
+        {
+            milliseconds = _renderer.LastFrameMs;
+            return true;
+        }
+
+        milliseconds = 0;
+        return false;
+    }
+
+    static string FormatFrameTime(double milliseconds)
+    {
+        if (milliseconds < 100)
+            return $"{milliseconds:0.0} ms";
+        if (milliseconds < 10_000)
+            return $"{milliseconds:0} ms";
+        return $"{milliseconds / 1000:0.00} s";
     }
 
     RenderRequest FrameRequest(int width, int height)
@@ -390,6 +445,7 @@ public sealed class VisualizerHost : IDisposable
             _settings.Julia,
             _settings.JuliaRe,
             _settings.JuliaIm,
+            false,
             true);
 
     public void Dispose()

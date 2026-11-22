@@ -14,6 +14,8 @@ An interactive viewer for the Mandelbrot set and its relatives. Every pixel asks
 - Paint the interior solid or with a glow based on the smallest size the orbit reached.
 - Switch to a Julia set and type the constant `c`.
 - Draw with a GPU fragment shader, or fall back to the CPU. Histogram coloring always uses the CPU.
+- Optionally evaluate whole-number powers with AVX on the CPU.
+- Optionally show how long the newest image took to generate.
 - Save the current picture as a PNG under `captures/`.
 
 ## The math, simply
@@ -118,6 +120,8 @@ Pictures saved from the app go to `captures/`.
 | Palette | Combo box, or `C` to cycle |
 | Julia set | Checkbox or `J`. `Re c` and `Im c` edit the constant |
 | GPU shader | Checkbox or `G`. Histogram coloring stays on the CPU |
+| SIMD | Checkbox or `V`. Speeds whole-number powers on the CPU. Fractional powers stay on the scalar path |
+| Frame time | Checkbox. Shows how long the newest image took to generate |
 | Reset view | Button or `R` |
 | Hide the panel | `H` |
 | Full screen | `F11` |

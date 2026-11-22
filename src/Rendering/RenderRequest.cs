@@ -19,4 +19,5 @@ public readonly record struct RenderRequest(
     bool Julia,
     double JuliaRe,
     double JuliaIm,
+    bool UseSimd,
     bool FinalQuality);

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Numerics;
 using Mandelbrot.Visualizer.Coloring;
 using Mandelbrot.Visualizer.Formula;
@@ -26,6 +27,8 @@ public sealed class FractalRenderer : IDisposable
 
     public bool IsBusy { get; private set; }
     public bool HasImage => _hasTexture;
+    public bool HasFrameTime { get; private set; }
+    public double LastFrameMs { get; private set; }
 
     public void Request(RenderRequest request)
     {
@@ -55,6 +58,7 @@ public sealed class FractalRenderer : IDisposable
 
     void Render(RenderRequest request, int generation)
     {
+        long started = Stopwatch.GetTimestamp();
         Color[]? pixels = Compute(request, generation);
         lock (_gate)
         {
@@ -63,6 +67,8 @@ public sealed class FractalRenderer : IDisposable
                 _ready = pixels;
                 _readyWidth = request.Width;
                 _readyHeight = request.Height;
+                LastFrameMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                HasFrameTime = true;
             }
 
             _running = false;
@@ -97,6 +103,12 @@ public sealed class FractalRenderer : IDisposable
             if ((y & 15) == 0 && Volatile.Read(ref _generation) != generation)
             {
                 Volatile.Write(ref abandoned, 1);
+                return;
+            }
+
+            if (request.UseSimd && SimdMultibrot.IsSupported)
+            {
+                SimdMultibrot.EvaluateRow(width, height, y, originX, originY, halfW, halfH, power, maxIterations, julia, juliaRe, juliaIm, mu, minRadius);
                 return;
             }
 

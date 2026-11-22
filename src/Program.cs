@@ -38,6 +38,14 @@ static bool SelfTest()
         ok = false;
     }
 
+    if (SimdMultibrot.MatchesScalar(out string simd))
+        Console.WriteLine($"pass  {simd}");
+    else
+    {
+        Console.WriteLine($"fail  {simd}");
+        ok = false;
+    }
+
     Console.WriteLine(ok ? "self-test passed" : "self-test failed");
     return ok;
 }
