@@ -24,6 +24,7 @@ public sealed class RenderingFeature : IDisposable
 
     public bool UseGpu { get; private set; } = true;
     public bool UseSimd { get; private set; }
+    public ReferenceOrbit? ActiveOrbit => _submittedOrbit;
 
     public void SetUseGpu(bool value) => UseGpu = value;
 

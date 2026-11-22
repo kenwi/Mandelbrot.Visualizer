@@ -31,6 +31,7 @@ public static class SelfTest
         ok &= Report(PaletteEndpointsConsistent(out string paletteMessage), paletteMessage, paletteMessage);
         ok &= Report(BigFloatAndFloatExpValid(out string bigMsg), bigMsg, bigMsg);
         ok &= Report(DeepPerturbationMatchesBigFloat(out string perturbMsg), perturbMsg, perturbMsg);
+        ok &= Report(CursorProbeMatchesFormula(out string probeMsg), probeMsg, probeMsg);
 
         Console.WriteLine(ok ? "self-test passed" : "self-test failed");
         return ok;
@@ -244,6 +245,76 @@ public static class SelfTest
         }
 
         message = "deep perturbation + Zhuoran rebasing matches BigFloat at 1e-25 and 1e-80 (n=2,3,4,Julia)";
+        return true;
+    }
+
+    static bool CursorProbeMatchesFormula(out string message)
+    {
+        // c = 1: z0=0, z1=1, z2=2, z3=5, z4=26 (> 16 bailout) -> escapes at iter 4 with z = 26 + 0i.
+        var c1 = MultibrotFormula.Probe(0, 0, 1, 0, 2, 200);
+        if (c1.Inside || c1.Iterations != 4 || Math.Abs(c1.FinalZx - 26.0) > 1e-9 || Math.Abs(c1.FinalZy) > 1e-9)
+        {
+            message = $"probe at c=1 expected iter 4 z=26+0i, got inside={c1.Inside} iter={c1.Iterations} z={c1.FinalZx}+{c1.FinalZy}i";
+            return false;
+        }
+
+        // c = -1: period-2 cycle 0, -1, 0, -1... -> stays inside with z_200 = 0 + 0i.
+        var cm1 = MultibrotFormula.Probe(0, 0, -1, 0, 2, 200);
+        if (!cm1.Inside || cm1.Iterations != 200 || Math.Abs(cm1.FinalZx) > 1e-9 || Math.Abs(cm1.FinalZy) > 1e-9)
+        {
+            message = $"probe at c=-1 expected inside z=0+0i, got inside={cm1.Inside} iter={cm1.Iterations} z={cm1.FinalZx}+{cm1.FinalZy}i";
+            return false;
+        }
+
+        // Parity against MultibrotFormula.Evaluate across integer, fractional, and Julia cases.
+        (double zx, double zy, double cx, double cy, double power)[] cases =
+        [
+            (0, 0, 0.4, 0.5, 2),
+            (0, 0, -0.5, 0.1, 2),
+            (0, 0, 0.5, 0.6, 3),
+            (0, 0, 1.2, 1.2, 1.4),
+            (0.2, 0.3, -0.8, 0.156, 2),
+        ];
+
+        foreach (var (zx, zy, cx, cy, power) in cases)
+        {
+            var eval = MultibrotFormula.Evaluate(zx, zy, cx, cy, power, 120);
+            var probe = MultibrotFormula.Probe(zx, zy, cx, cy, power, 120);
+            if (eval.Inside != probe.Inside || (!eval.Inside && Math.Abs(eval.Mu - probe.Mu) > 1e-5))
+            {
+                message = $"probe disagreed with Evaluate at n={power} ({eval.Mu} vs {probe.Mu})";
+                return false;
+            }
+        }
+
+        // Deep-zoom perturbation probe parity at 1e-25 (double + extended).
+        FloatExp.TryParse("1e-25", out FloatExp scale);
+        int prec = BigFloat.RequiredBits(scale) + 96;
+        BigFloat.TryParseDecimal("-0.743643887037158704752191506114774", prec, out BigFloat refX);
+        BigFloat.TryParseDecimal("0.131825904205311970493132056385139", prec, out BigFloat refY);
+        var formula = new FormulaParams(2, 1200, false, -0.8, 0.156);
+        ReferenceOrbit? orbit = ReferenceOrbit.ComputeBest(refX, refY, scale, formula);
+        if (orbit == null)
+        {
+            message = "probe deep-zoom test failed to build reference orbit";
+            return false;
+        }
+
+        FloatExp dcx = BigFloat.Sub(refX, orbit.RefRe, prec).ToFloatExp() + scale * 0.4;
+        FloatExp dcy = BigFloat.Sub(refY, orbit.RefIm, prec).ToFloatExp() - scale * 0.2;
+        var evalDeep = PerturbationFormula.EvaluateDouble(dcx.ToDouble(), dcy.ToDouble(), orbit, formula, true);
+        var probeDbl = PerturbationFormula.ProbeDouble(dcx.ToDouble(), dcy.ToDouble(), orbit, formula);
+        var probeExt = PerturbationFormula.ProbeExtended(ComplexExp.FromFloatExp(dcx, dcy), orbit, formula);
+
+        if (evalDeep.Inside != probeDbl.Inside
+            || evalDeep.Inside != probeExt.Inside
+            || (!evalDeep.Inside && (Math.Abs(evalDeep.Mu - probeDbl.Mu) > 1e-4 || Math.Abs(evalDeep.Mu - probeExt.Mu) > 1e-4)))
+        {
+            message = $"deep probe disagreed with perturbation evaluate ({evalDeep.Mu} vs {probeDbl.Mu} / {probeExt.Mu})";
+            return false;
+        }
+
+        message = "cursor orbit probe matches scalar and deep-zoom perturbation formulas";
         return true;
     }
 }

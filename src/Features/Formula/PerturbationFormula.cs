@@ -330,4 +330,203 @@ public static class PerturbationFormula
 
         return needsMinRadius ? MultibrotFormula.Inside(minR) : new MultibrotFormula.Escape(-1f, 0f);
     }
+
+    public static MultibrotFormula.OrbitProbe ProbeDouble(
+        double dcx,
+        double dcy,
+        ReferenceOrbit orbit,
+        in FormulaParams formula)
+    {
+        double[] refZx = orbit.Zx;
+        double[] refZy = orbit.Zy;
+        int refLimit = orbit.Length - 1;
+        int exponent = orbit.Exponent;
+        int maxIter = formula.MaxIterations;
+        bool julia = formula.Julia;
+
+        double dzx = julia ? dcx : 0.0;
+        double dzy = julia ? dcy : 0.0;
+        double addCx = julia ? 0.0 : dcx;
+        double addCy = julia ? 0.0 : dcy;
+
+        int refIdx = 0;
+        double minR = double.MaxValue;
+        Span<double> powRe = stackalloc double[17];
+        Span<double> powIm = stackalloc double[17];
+
+        for (int i = 0; i < maxIter; i++)
+        {
+            double Zx = refZx[refIdx];
+            double Zy = refZy[refIdx];
+            double zx = Zx + dzx;
+            double zy = Zy + dzy;
+            double r2 = zx * zx + zy * zy;
+
+            if (r2 < minR) minR = r2;
+            if (!double.IsFinite(r2) || r2 > Bailout2)
+            {
+                var esc = MultibrotFormula.Escaped(i, r2, exponent, minR);
+                return new MultibrotFormula.OrbitProbe(false, i, esc.Mu, zx, zy, esc.MinRadius);
+            }
+
+            if (!julia)
+            {
+                double dz2 = dzx * dzx + dzy * dzy;
+                if (r2 < dz2 || refIdx >= refLimit)
+                {
+                    dzx = zx;
+                    dzy = zy;
+                    refIdx = 0;
+                    Zx = 0.0;
+                    Zy = 0.0;
+                }
+            }
+            else if (refIdx >= refLimit)
+            {
+                return ContinueDirectProbe(zx, zy, formula.JuliaRe, formula.JuliaIm, exponent, i, maxIter, minR);
+            }
+
+            if (exponent == 2)
+            {
+                double tx = 2.0 * Zx + dzx;
+                double ty = 2.0 * Zy + dzy;
+                double nx = dzx * tx - dzy * ty + addCx;
+                double ny = dzx * ty + dzy * tx + addCy;
+                dzx = nx;
+                dzy = ny;
+            }
+            else
+            {
+                PerturbStepDouble(Zx, Zy, ref dzx, ref dzy, exponent, powRe, powIm);
+                dzx += addCx;
+                dzy += addCy;
+            }
+
+            refIdx++;
+        }
+
+        double finalZx = refIdx < orbit.Length ? refZx[refIdx] + dzx : dzx;
+        double finalZy = refIdx < orbit.Length ? refZy[refIdx] + dzy : dzy;
+        return new MultibrotFormula.OrbitProbe(true, maxIter, -1f, finalZx, finalZy, MultibrotFormula.Radius(minR));
+    }
+
+    public static MultibrotFormula.OrbitProbe ProbeExtended(
+        ComplexExp dc,
+        ReferenceOrbit orbit,
+        in FormulaParams formula)
+    {
+        double[] refZx = orbit.Zx;
+        double[] refZy = orbit.Zy;
+        int refLimit = orbit.Length - 1;
+        int exponent = orbit.Exponent;
+        int maxIter = formula.MaxIterations;
+        bool julia = formula.Julia;
+
+        ComplexExp dz = julia ? dc : ComplexExp.Zero;
+        ComplexExp addC = julia ? ComplexExp.Zero : dc;
+
+        int refIdx = 0;
+        double minR = double.MaxValue;
+        Span<double> powRe = stackalloc double[17];
+        Span<double> powIm = stackalloc double[17];
+
+        for (int i = 0; i < maxIter; i++)
+        {
+            double Zx = refZx[refIdx];
+            double Zy = refZy[refIdx];
+
+            ComplexExp fullZ = ComplexExp.AddDouble(dz, Zx, Zy);
+            fullZ.ToDouble(out double zx, out double zy);
+            double r2 = zx * zx + zy * zy;
+
+            if (r2 < minR) minR = r2;
+            if (!double.IsFinite(r2) || r2 > Bailout2)
+            {
+                var esc = MultibrotFormula.Escaped(i, r2, exponent, minR);
+                return new MultibrotFormula.OrbitProbe(false, i, esc.Mu, zx, zy, esc.MinRadius);
+            }
+
+            if (!julia)
+            {
+                FloatExp fullNorm2 = fullZ.NormSquared();
+                FloatExp dzNorm2 = dz.NormSquared();
+                if (fullNorm2 < dzNorm2 || refIdx >= refLimit)
+                {
+                    dz = fullZ;
+                    refIdx = 0;
+                    Zx = 0.0;
+                    Zy = 0.0;
+                }
+            }
+            else if (refIdx >= refLimit)
+            {
+                return ContinueDirectProbe(zx, zy, formula.JuliaRe, formula.JuliaIm, exponent, i, maxIter, minR);
+            }
+
+            if (exponent == 2)
+            {
+                ComplexExp twoZPlusDz = ComplexExp.AddDouble(dz, 2.0 * Zx, 2.0 * Zy);
+                dz = ComplexExp.Add(ComplexExp.Mul(dz, twoZPlusDz), addC);
+            }
+            else
+            {
+                dz = ComplexExp.Add(PerturbStepExtended(Zx, Zy, dz, exponent, powRe, powIm), addC);
+            }
+
+            refIdx++;
+        }
+
+        double refX = refIdx < orbit.Length ? refZx[refIdx] : 0.0;
+        double refY = refIdx < orbit.Length ? refZy[refIdx] : 0.0;
+        ComplexExp.AddDouble(dz, refX, refY).ToDouble(out double finalZx, out double finalZy);
+        return new MultibrotFormula.OrbitProbe(true, maxIter, -1f, finalZx, finalZy, MultibrotFormula.Radius(minR));
+    }
+
+    static MultibrotFormula.OrbitProbe ContinueDirectProbe(
+        double zx,
+        double zy,
+        double cx,
+        double cy,
+        int exponent,
+        int startIteration,
+        int maxIter,
+        double minR)
+    {
+        for (int i = startIteration; i < maxIter; i++)
+        {
+            double r2 = zx * zx + zy * zy;
+            if (r2 < minR) minR = r2;
+            if (!double.IsFinite(r2) || r2 > Bailout2)
+            {
+                var esc = MultibrotFormula.Escaped(i, r2, exponent, minR);
+                return new MultibrotFormula.OrbitProbe(false, i, esc.Mu, zx, zy, esc.MinRadius);
+            }
+
+            double rx = 1.0, ry = 0.0;
+            double bx = zx, by = zy;
+            int e = exponent;
+            while (e > 0)
+            {
+                if ((e & 1) != 0)
+                {
+                    double nx = rx * bx - ry * by;
+                    double ny = rx * by + ry * bx;
+                    rx = nx;
+                    ry = ny;
+                }
+
+                e >>= 1;
+                if (e == 0) break;
+                double sx = bx * bx - by * by;
+                double sy = 2.0 * bx * by;
+                bx = sx;
+                by = sy;
+            }
+
+            zx = rx + cx;
+            zy = ry + cy;
+        }
+
+        return new MultibrotFormula.OrbitProbe(true, maxIter, -1f, zx, zy, MultibrotFormula.Radius(minR));
+    }
 }

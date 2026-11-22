@@ -14,6 +14,14 @@ public static class MultibrotFormula
         public bool Inside => Mu < 0f;
     }
 
+    public readonly record struct OrbitProbe(
+        bool Inside,
+        int Iterations,
+        float Mu,
+        double FinalZx,
+        double FinalZy,
+        float MinRadius);
+
     public static bool IsInMandelbrotCardioidOrBulb(double cx, double cy)
     {
         double xm = cx - 0.25;
@@ -50,6 +58,101 @@ public static class MultibrotFormula
         }
 
         return EvaluateReal(zx, zy, cx, cy, power, maxIterations);
+    }
+
+    public static OrbitProbe Probe(
+        double zx,
+        double zy,
+        double cx,
+        double cy,
+        double power,
+        int maxIterations)
+    {
+        if (maxIterations < 1 || !double.IsFinite(power) || Math.Abs(power) < FormulaParams.MinNonZeroPower)
+            return new OrbitProbe(true, 0, -1f, zx, zy, 0f);
+
+        const double bailout2 = Bailout * Bailout;
+        double minR = double.MaxValue;
+
+        if (FormulaParams.TryGetIntegerExponent(power, out int n))
+        {
+            if (n == 2)
+            {
+                for (int i = 0; i < maxIterations; i++)
+                {
+                    double x2 = zx * zx;
+                    double y2 = zy * zy;
+                    double r2 = x2 + y2;
+                    if (r2 < minR) minR = r2;
+                    if (!double.IsFinite(r2) || r2 > bailout2)
+                    {
+                        Escape esc = Escaped(i, r2, 2.0, minR);
+                        return new OrbitProbe(false, i, esc.Mu, zx, zy, esc.MinRadius);
+                    }
+
+                    zy = 2.0 * zx * zy + cy;
+                    zx = x2 - y2 + cx;
+                }
+
+                return new OrbitProbe(true, maxIterations, -1f, zx, zy, Radius(minR));
+            }
+
+            for (int i = 0; i < maxIterations; i++)
+            {
+                double r2 = zx * zx + zy * zy;
+                if (r2 < minR) minR = r2;
+                if (!double.IsFinite(r2) || r2 > bailout2)
+                {
+                    Escape esc = Escaped(i, r2, n, minR);
+                    return new OrbitProbe(false, i, esc.Mu, zx, zy, esc.MinRadius);
+                }
+
+                if (!PowInteger(ref zx, ref zy, n))
+                    return new OrbitProbe(false, i, i, double.NaN, double.NaN, Radius(minR));
+
+                zx += cx;
+                zy += cy;
+                if (!double.IsFinite(zx) || !double.IsFinite(zy))
+                    return new OrbitProbe(false, i, i, zx, zy, Radius(minR));
+            }
+
+            return new OrbitProbe(true, maxIterations, -1f, zx, zy, Radius(minR));
+        }
+
+        for (int i = 0; i < maxIterations; i++)
+        {
+            double r2 = zx * zx + zy * zy;
+            if (r2 < minR) minR = r2;
+            if (!double.IsFinite(r2) || r2 > bailout2)
+            {
+                Escape esc = Escaped(i, r2, power, minR);
+                return new OrbitProbe(false, i, esc.Mu, zx, zy, esc.MinRadius);
+            }
+
+            if (r2 == 0)
+            {
+                if (power > 0)
+                {
+                    zx = cx;
+                    zy = cy;
+                    continue;
+                }
+
+                return new OrbitProbe(false, i, i, 0, 0, 0f);
+            }
+
+            double radius = Math.Sqrt(r2);
+            double theta = Math.Atan2(zy, zx);
+            double raised = Math.Pow(radius, power);
+            double angle = power * theta;
+            zx = raised * Math.Cos(angle) + cx;
+            zy = raised * Math.Sin(angle) + cy;
+
+            if (!double.IsFinite(zx) || !double.IsFinite(zy))
+                return new OrbitProbe(false, i, i, zx, zy, Radius(minR));
+        }
+
+        return new OrbitProbe(true, maxIterations, -1f, zx, zy, Radius(minR));
     }
 
     public static void EvaluateScalarRow(

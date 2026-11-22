@@ -151,16 +151,36 @@ public sealed class NavigationFeature
         return true;
     }
 
-    public void DrawTelemetry(ref PanelLayout layout, int canvasWidth, int canvasHeight, double power)
+    public bool TryGetHoveredPixel(int canvasWidth, int canvasHeight, out int pixelX, out int pixelY)
     {
         Vector2 mouse = Raylib.GetMousePosition();
-        bool cursorValid = mouse.X >= 0 && mouse.X < canvasWidth && mouse.Y >= 0 && mouse.Y < canvasHeight;
-        _view.ScreenToComplex(mouse.X, mouse.Y, canvasWidth, canvasHeight, out double cursorRe, out double cursorIm);
+        if (mouse.X < 0 || mouse.X >= canvasWidth || mouse.Y < 0 || mouse.Y >= canvasHeight)
+        {
+            pixelX = 0;
+            pixelY = 0;
+            return false;
+        }
 
-        string cursor = cursorValid
-            ? $"{cursorRe:0.######}  {FormatSigned(cursorIm)} i"
-            : "over the panel";
-        layout.Label($"Cursor  {cursor}");
+        pixelX = (int)mouse.X;
+        pixelY = (int)mouse.Y;
+        return true;
+    }
+
+    public void DrawCursorTelemetry(ref PanelLayout layout, int canvasWidth, int canvasHeight)
+    {
+        if (TryGetHoveredPixel(canvasWidth, canvasHeight, out int px, out int py))
+        {
+            _view.ScreenToComplex(px + 0.5, py + 0.5, canvasWidth, canvasHeight, out double cursorRe, out double cursorIm);
+            layout.Label($"Cursor  {cursorRe:0.######}  {FormatSigned(cursorIm)} i");
+        }
+        else
+        {
+            layout.Label("Cursor  over the panel");
+        }
+    }
+
+    public void DrawViewportTelemetry(ref PanelLayout layout, double power)
+    {
         layout.Label($"Center  {_view.CenterX.FormatSummary()}  {FormatSigned(_view.CenterY.ToDouble())} i");
         layout.Label($"Zoom  {_view.ZoomDisplay}    n = {power:0.####}");
     }

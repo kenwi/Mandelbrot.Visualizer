@@ -69,7 +69,9 @@ public sealed class SidePanel
             capture.SaveInteractive(rendering, coloring.State.Mode);
 
         layout.Separator();
-        navigation.DrawTelemetry(ref layout, canvasWidth, canvasHeight, formula.State.Power);
+        navigation.DrawCursorTelemetry(ref layout, canvasWidth, canvasHeight);
+        diagnostics.DrawCursorProbe(ref layout, canvasWidth, canvasHeight, navigation, formula.State, rendering);
+        navigation.DrawViewportTelemetry(ref layout, formula.State.Power);
         diagnostics.DrawTelemetry(ref layout, rendering, coloring.State.Mode);
 
         layout.Space(6);

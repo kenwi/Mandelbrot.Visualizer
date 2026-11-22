@@ -15,7 +15,7 @@ public readonly record struct FormulaParams(
 {
     public const double PowerMin = -6;
     public const double PowerMax = 12;
-    public const int IterationMin = 16;
+    public const int IterationMin = 1;
     public const int IterationMax = 100_000;
     public const double MinNonZeroPower = 1e-4;
     public const int IntegerExponentMin = -16;
