@@ -6,17 +6,18 @@ An interactive viewer for the Mandelbrot set and its relatives. Every pixel asks
 
 ## Capabilities
 
-- Pan, zoom, and reset the view. Zoom reaches about `1e-14` of the starting scale.
+- Pan, zoom, and reset the view with arbitrary-depth zoom for Mandelbrot (`n = 2`), positive whole-number Multibrot (`n = 2..16`), and Julia sets.
 - Set the power `n` from the slider (`-6` to `12`), type any finite number, or hold `[` and `]` to sweep it.
-- Choose 16 to 4000 iterations. More iterations decide borderline points more carefully.
+- Choose `1` to `100,000` iterations (logarithmic slider, text box, or `-`/`+`), or toggle **Auto iterations** to scale the limit with zoom depth.
+- Inspect the point under the cursor live in the side panel: complex coordinate (`Cursor`), escape iteration / smooth value or interior magnitude (`Value`), and final complex value (`Final z`), including at deep zoom.
 - Color by how fast a point escapes: cyclic bands or a histogram, with optional smoothing, density, and phase.
-- Eight palettes: Classic, Fire, Electric, Ocean, Sunset, Ice, Grayscale, Rainbow.
+- Eight palettes shared directly between CPU and GPU via a baked LUT: Classic, Fire, Electric, Ocean, Sunset, Ice, Grayscale, Rainbow.
 - Paint the interior solid or with a glow based on the smallest size the orbit reached.
 - Switch to a Julia set and type the constant `c`.
-- Draw with a GPU fragment shader, or fall back to the CPU. Histogram coloring always uses the CPU.
-- Optionally evaluate whole-number powers with AVX on the CPU.
+- Draw with tiered GPU fragment shaders (native float32, double-float, and deep-zoom perturbation with progressive tiling and idle frame caching), or switch to the CPU backend with orbit caching for instant recoloring. Histogram coloring always uses the CPU.
+- Optionally evaluate positive whole-number powers with AVX2 / AVX-512 SIMD (FMA + lane refilling) on the CPU.
 - Optionally show how long the newest image took to generate.
-- Save the current picture as a PNG under `captures/`.
+- Save the current picture as a PNG under `captures/`, or render headlessly from the command line with `--screenshot`.
 
 ## The math, simply
 
@@ -79,7 +80,13 @@ That matches whole-number powers, and it also works for fractions. `1.4` means "
 
 Angles are measured from the positive rightward direction, and they jump when you cross the leftward direction. That jump is a branch cut. For a fractional `n`, crossing it changes the result, because a fraction of a turn does not land on the same place from both sides. Whole-number powers do not have this seam, because a whole number of turns brings you back to the same direction.
 
-Very deep zooms of a fractional power are less precise than whole-number powers. The GPU evaluates that polar form in ordinary single precision. Whole-number powers on the GPU use a double-float iteration so the zoom can go much deeper before the pixels fall apart.
+Very deep zooms of a fractional power are less precise than whole-number powers. The GPU evaluates that polar form in ordinary single precision. Whole-number powers switch from float32 to double-float and then to arbitrary-precision perturbation so you can keep zooming far past standard floating-point limits.
+
+### Deep zoom (perturbation)
+
+Standard 64-bit floating-point numbers run out of precision around `1e-15`. Computing every pixel in full arbitrary-precision arithmetic would be too slow for interactive exploration.
+
+Instead, once zoom passes `1e-12` (for integer powers `n = 2..16` and Julia sets), the viewer computes a single high-precision **reference orbit** `Z` off-thread using arbitrary-precision `BigFloat` math, then iterates only the tiny difference `dz` from that reference orbit for every pixel on the GPU or CPU. Zhuoran rebasing resets `dz` whenever a pixel drifts too far from the reference orbit to prevent glitches, and extended-exponent numbers (`FloatExp` / `ComplexExp`) keep tracking offsets well past `1e-38` and `1e-308`.
 
 ### Julia sets
 
@@ -105,9 +112,31 @@ You need the .NET 11 SDK.
 dotnet run --project src/Mandelbrot.Visualizer.csproj
 ```
 
-`dotnet run --project src/Mandelbrot.Visualizer.csproj -- --self-test` checks a few known inside and outside points and does not open a window.
+Run the headless verification suite (checks known points, SIMD parity, palette LUT endpoints, `BigFloat`/`FloatExp`/`ComplexExp` math, deep-zoom perturbation parity at `1e-25` and `1e-80`, and cursor orbit probing):
 
-Pictures saved from the app go to `captures/`.
+```bash
+dotnet run --project src/Mandelbrot.Visualizer.csproj -- --self-test
+```
+
+You can also launch directly to a location or capture a PNG from the command line:
+
+```bash
+dotnet run --project src/Mandelbrot.Visualizer.csproj -- \
+  --center -0.743643887037158704752191506114774,0.131825904205311970493132056385139 \
+  --scale 1e-25 --power 2 --iter 1500 --screenshot captures/deep.png
+```
+
+Supported CLI options:
+
+- `--self-test` - run headless math and parity checks and exit
+- `--center re,im` - starting complex center (supports arbitrary decimal digits)
+- `--scale value` - starting viewport half-height (supports scientific notation like `1e-45`)
+- `--power n` - starting exponent `n`
+- `--iter count` - starting max iterations (`1` to `100000`)
+- `--cpu` - start with the CPU renderer instead of GPU shaders
+- `--screenshot path.png` - render a final-quality frame, save it (plus a `.window.png` capture), and exit
+
+Pictures saved interactively from the app go to `captures/`.
 
 ## Controls
 
@@ -116,14 +145,28 @@ Pictures saved from the app go to `captures/`.
 | Pan | Drag, or the arrow keys |
 | Zoom | Mouse wheel. Hold Shift and Up to zoom in, Shift and Down to zoom out. Double-click zooms in. Shift double-click zooms out |
 | Power `n` | Slider, text box, or hold `[` and `]`. A tap steps by 0.1 |
-| Iterations | Slider, text box, or `-` and `+` |
+| Iterations | Logarithmic slider (`1` to `100,000`), text box, or `-` and `+` |
+| Auto iterations | Checkbox. Scales iteration limit automatically with zoom depth |
 | Palette | Combo box, or `C` to cycle |
 | Julia set | Checkbox or `J`. `Re c` and `Im c` edit the constant |
 | GPU shader | Checkbox or `G`. Histogram coloring stays on the CPU |
-| SIMD | Checkbox or `V`. Speeds whole-number powers on the CPU. Fractional powers stay on the scalar path |
+| SIMD | Checkbox or `V`. Speeds positive whole-number powers on the CPU with AVX2 / AVX-512. Fractional powers stay on the scalar path |
 | Frame time | Checkbox. Shows how long the newest image took to generate |
 | Reset view | Button or `R` |
 | Hide the panel | `H` |
 | Full screen | `F11` |
 | Save PNG | Button or `S` |
 | Quit | `Esc` |
+
+## Architecture
+
+The codebase is organized as vertical feature slices under `src/`:
+
+- `src/App/` - thin Raylib window host (`VisualizerHost`) and side-panel shell (`SidePanel`)
+- `src/Features/Formula/` - `FormulaParams`, scalar/SIMD Multibrot evaluation, `ReferenceOrbit`, and `PerturbationFormula`
+- `src/Features/Coloring/` - palettes, smooth/histogram mapping, and GPU `PaletteLut` texture
+- `src/Features/Navigation/` - arbitrary-precision `FractalView` camera, input handling, and coordinate telemetry
+- `src/Features/Rendering/` - GPU tiered/tiled shaders (`multibrot_f32.frag`, `multibrot.frag`, `multibrot_perturb.frag`), CPU cached renderer, and backend dispatch
+- `src/Features/Capture/` - interactive PNG saving and CLI `--screenshot` automation
+- `src/Features/Diagnostics/` - cursor orbit probing, frame-time readout, HUD, and `--self-test`
+- `src/Shared/` - feature-agnostic `BigFloat`, `FloatExp`/`ComplexExp`, and RayGui panel helpers
