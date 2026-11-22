@@ -228,7 +228,7 @@ public sealed class CpuFractalRenderer : IFractalBackend
         bool useSimd = !useShaded && request.UseSimd && SimdMultibrot.IsSupported;
 
         bool mirrorY = !usePerturbation
-            && !formula.Julia
+            && formula.IsSymmetricAcrossRealAxis
             && Math.Abs(originY) < 1e-15
             && FormulaParams.TryGetIntegerExponent(formula.Power, out _);
         int rowLimit = mirrorY ? (height + 1) / 2 : height;

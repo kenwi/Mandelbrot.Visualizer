@@ -33,6 +33,7 @@ public static class SelfTest
         ok &= Report(DeepPerturbationMatchesBigFloat(out string perturbMsg), perturbMsg, perturbMsg);
         ok &= Report(CursorProbeMatchesFormula(out string probeMsg), probeMsg, probeMsg);
         ok &= Report(ShadedLightingAndOrbitTrapValid(out string shadedMsg), shadedMsg, shadedMsg);
+        ok &= Report(FractalFamiliesValid(out string familyMsg), familyMsg, familyMsg);
 
         Console.WriteLine(ok ? "self-test passed" : "self-test failed");
         return ok;
@@ -414,6 +415,120 @@ public static class SelfTest
         }
 
         message = "3D normal-map lighting and orbit traps valid across scalar and deep-zoom perturbation";
+        return true;
+    }
+
+    static bool FractalFamiliesValid(out string message)
+    {
+        FractalFamily[] nonDefault =
+        [
+            FractalFamily.BurningShip,
+            FractalFamily.Tricorn,
+            FractalFamily.Celtic,
+            FractalFamily.Buffalo,
+        ];
+
+        if (!FormulaParams.SupportsPerturbation(new FormulaParams(2, 128, false, -0.8, 0.156, FractalFamily.Multibrot), out _))
+        {
+            message = "Multibrot n=2 should support deep perturbation";
+            return false;
+        }
+
+        const int width = 24;
+        const int height = 16;
+        var mu = new float[width * height];
+        var minR = new float[width * height];
+        var trap = new float[width * height];
+        var nx = new float[width * height];
+        var ny = new float[width * height];
+
+        foreach (FractalFamily family in nonDefault)
+        {
+            var formula = new FormulaParams(2, 160, false, -0.8, 0.156, family);
+            if (FormulaParams.SupportsPerturbation(formula, out _))
+            {
+                message = $"{family} should not claim Multibrot perturbation support";
+                return false;
+            }
+
+            if (!MultibrotFormula.Evaluate(0, 0, 0, 0, 2, 160, true, family).Inside)
+            {
+                message = $"{family} origin should be inside";
+                return false;
+            }
+
+            if (MultibrotFormula.Evaluate(0, 0, 2, 2, 2, 160, true, family).Inside)
+            {
+                message = $"{family} (2, 2) should escape";
+                return false;
+            }
+
+            // Probe parity for integer and fractional powers.
+            foreach (double power in new[] { 2.0, 3.0, 2.35 })
+            {
+                var eval = MultibrotFormula.Evaluate(0, 0, -0.65, 0.45, power, 120, true, family);
+                var probe = MultibrotFormula.Probe(0, 0, -0.65, 0.45, power, 120, family);
+                if (eval.Inside != probe.Inside || (!eval.Inside && Math.Abs(eval.Mu - probe.Mu) > 1e-5))
+                {
+                    message = $"{family} probe disagreed with Evaluate at n={power} ({eval.Mu} vs {probe.Mu})";
+                    return false;
+                }
+            }
+
+            // Shaded row with 2x2 real Jacobian normal lighting produces unit normals.
+            formula.GetDefaultView(out double cx, out double cy, out double scale);
+            double halfW = scale * width / height;
+            int escaped = 0;
+            for (int y = 0; y < height; y++)
+                MultibrotFormula.EvaluateShadedRow(width, height, y, cx, cy, halfW, scale, formula, mu, minR, trap, nx, ny, true, true, (int)OrbitTrapMode.Point);
+
+            for (int i = 0; i < width * height; i++)
+            {
+                if (mu[i] >= 0)
+                {
+                    escaped++;
+                    float len = MathF.Sqrt(nx[i] * nx[i] + ny[i] * ny[i]);
+                    if (MathF.Abs(len - 1f) > 1e-3f || !float.IsFinite(trap[i]) || trap[i] < 0f)
+                    {
+                        message = $"{family} shaded pixel {i} invalid (|N|={len}, trap={trap[i]})";
+                        return false;
+                    }
+                }
+            }
+
+            if (escaped == 0)
+            {
+                message = $"{family} shaded test had no escaped pixels";
+                return false;
+            }
+        }
+
+        // Verify Burning Ship asymmetry vs Tricorn/Celtic real-axis symmetry.
+        var bsPos = MultibrotFormula.Evaluate(0, 0, -1.75, 0.03, 2, 160, true, FractalFamily.BurningShip);
+        var bsNeg = MultibrotFormula.Evaluate(0, 0, -1.75, -0.03, 2, 160, true, FractalFamily.BurningShip);
+        if (bsPos.Inside == bsNeg.Inside && Math.Abs(bsPos.Mu - bsNeg.Mu) < 1e-3)
+        {
+            message = "Burning Ship should be asymmetric across the real axis at (-1.75, +/-0.03)";
+            return false;
+        }
+
+        var trPos = MultibrotFormula.Evaluate(0, 0, -0.6, 0.45, 2, 160, true, FractalFamily.Tricorn);
+        var trNeg = MultibrotFormula.Evaluate(0, 0, -0.6, -0.45, 2, 160, true, FractalFamily.Tricorn);
+        if (trPos.Inside != trNeg.Inside || Math.Abs(trPos.Mu - trNeg.Mu) > 1e-5)
+        {
+            message = "Tricorn should be symmetric across the real axis";
+            return false;
+        }
+
+        var cePos = MultibrotFormula.Evaluate(0, 0, -0.6, 0.45, 2, 160, true, FractalFamily.Celtic);
+        var ceNeg = MultibrotFormula.Evaluate(0, 0, -0.6, -0.45, 2, 160, true, FractalFamily.Celtic);
+        if (cePos.Inside != ceNeg.Inside || Math.Abs(cePos.Mu - ceNeg.Mu) > 1e-5)
+        {
+            message = "Celtic should be symmetric across the real axis";
+            return false;
+        }
+
+        message = "all 5 fractal families valid across scalar, probe, symmetry, and 2x2 Jacobian lighting";
         return true;
     }
 }

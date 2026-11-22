@@ -56,7 +56,7 @@ public sealed class DiagnosticsFeature
         }
 
         ViewportState view = navigation.State;
-        bool wantsPerturb = view.IsDeepZoom && FormulaParams.SupportsPerturbation(formula.Power, out _);
+        bool wantsPerturb = view.IsDeepZoom && FormulaParams.SupportsPerturbation(formula, out _);
         ReferenceOrbit? orbit = wantsPerturb ? rendering.ActiveOrbit : null;
 
         if (wantsPerturb && (orbit == null || !orbit.IsReusableFor(view.CenterXExact, view.CenterYExact, view.ScaleExact, formula)))
@@ -110,8 +110,8 @@ public sealed class DiagnosticsFeature
         double cy = view.CenterY - v * halfHD;
 
         return formula.Julia
-            ? MultibrotFormula.Probe(cx, cy, formula.JuliaRe, formula.JuliaIm, formula.Power, formula.MaxIterations)
-            : MultibrotFormula.Probe(0, 0, cx, cy, formula.Power, formula.MaxIterations);
+            ? MultibrotFormula.Probe(cx, cy, formula.JuliaRe, formula.JuliaIm, formula.Power, formula.MaxIterations, formula.Family)
+            : MultibrotFormula.Probe(0, 0, cx, cy, formula.Power, formula.MaxIterations, formula.Family);
     }
 
     static string FormatProbeValue(in MultibrotFormula.OrbitProbe probe)
@@ -172,8 +172,9 @@ public sealed class DiagnosticsFeature
         RenderingFeature rendering)
     {
         string device = rendering.ActiveDeviceLabel(mode);
+        string familyPrefix = formula.Family == FractalFamily.Multibrot ? "" : $"{formula.Family}    ";
         Raylib.DrawText(
-            $"n = {formula.Power.ToString("0.####", CultureInfo.InvariantCulture)}    iter {formula.MaxIterations}    {device}",
+            $"{familyPrefix}n = {formula.Power.ToString("0.####", CultureInfo.InvariantCulture)}    iter {formula.MaxIterations}    {device}",
             16,
             16,
             20,

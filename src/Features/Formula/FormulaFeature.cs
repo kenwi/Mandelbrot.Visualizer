@@ -38,16 +38,24 @@ public sealed class FormulaFeature
         return true;
     }
 
-    public bool HandleKeys(out bool juliaToggled, out bool interactive)
+    public bool HandleKeys(out bool viewResetNeeded, out bool interactive)
     {
         bool changed = false;
-        juliaToggled = false;
+        viewResetNeeded = false;
         interactive = false;
 
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_J))
         {
             State = State with { Julia = !State.Julia };
-            juliaToggled = true;
+            viewResetNeeded = true;
+            changed = true;
+        }
+
+        if (Raylib.IsKeyPressed(KeyboardKey.KEY_F))
+        {
+            int next = ((int)State.Family + 1) % FormulaParams.FamilyCount;
+            State = State with { Family = (FractalFamily)next };
+            viewResetNeeded = true;
             changed = true;
         }
 
@@ -87,9 +95,18 @@ public sealed class FormulaFeature
         return changed;
     }
 
-    public bool DrawPowerAndIterations(ref PanelLayout layout, TextEditScope editScope)
+    public bool DrawPowerAndIterations(ref PanelLayout layout, TextEditScope editScope, out bool familyChanged)
     {
         bool changed = false;
+        familyChanged = false;
+
+        int family = (int)State.Family;
+        if (layout.LabeledCombo("Fractal", FormulaParams.FamilyComboItems, ref family))
+        {
+            State = State with { Family = (FractalFamily)family };
+            familyChanged = true;
+            changed = true;
+        }
 
         layout.Label("Power n");
         changed |= layout.Slider(State.Power, FormulaParams.PowerMin, FormulaParams.PowerMax, value =>

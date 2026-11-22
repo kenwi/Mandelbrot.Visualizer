@@ -1,4 +1,10 @@
 #version 330
+#extension GL_ARB_gpu_shader5 : enable
+#ifdef GL_ARB_gpu_shader5
+#define DF_PRECISE precise
+#else
+#define DF_PRECISE
+#endif
 
 in vec2 fragTexCoord;
 in vec4 fragColor;
@@ -21,36 +27,40 @@ uniform int orbitTrap;
 uniform float density;
 uniform float phase;
 uniform int juliaSet;
+uniform int fractalFamily;
 uniform sampler2D paletteLut;
 
 out vec4 finalColor;
 
 vec2 dfAdd(vec2 a, vec2 b)
 {
-    float s = a.x + b.x;
-    float v = s - a.x;
-    float err = (a.x - (s - v)) + (b.x - v);
-    float t = err + a.y + b.y;
-    float z = s + t;
-    return vec2(z, t - (z - s));
+    DF_PRECISE float s = a.x + b.x;
+    DF_PRECISE float v = s - a.x;
+    DF_PRECISE float err = (a.x - (s - v)) + (b.x - v);
+    DF_PRECISE float t = err + a.y + b.y;
+    DF_PRECISE float z = s + t;
+    DF_PRECISE float lo = t - (z - s);
+    return vec2(z, lo);
 }
 
 vec2 dfSplit(float a)
 {
-    float c = 4097.0 * a;
-    float hi = c - (c - a);
-    return vec2(hi, a - hi);
+    DF_PRECISE float c = 4097.0 * a;
+    DF_PRECISE float hi = c - (c - a);
+    DF_PRECISE float lo = a - hi;
+    return vec2(hi, lo);
 }
 
 vec2 dfMul(vec2 a, vec2 b)
 {
-    float p = a.x * b.x;
+    DF_PRECISE float p = a.x * b.x;
     vec2 as = dfSplit(a.x);
     vec2 bs = dfSplit(b.x);
-    float e = ((as.x * bs.x - p) + as.x * bs.y + as.y * bs.x) + as.y * bs.y;
-    float t = e + (a.x * b.y + a.y * b.x);
-    float z = p + t;
-    return vec2(z, t - (z - p));
+    DF_PRECISE float e = ((as.x * bs.x - p) + as.x * bs.y + as.y * bs.x) + as.y * bs.y;
+    DF_PRECISE float t = e + (a.x * b.y + a.y * b.x);
+    DF_PRECISE float z = p + t;
+    DF_PRECISE float lo = t - (z - p);
+    return vec2(z, lo);
 }
 
 vec2 dfSub(vec2 a, vec2 b)
@@ -306,6 +316,79 @@ void stepDerivInteger(float zx, float zy, int n, bool addOne, inout vec2 d, inou
     renormDeriv(d, dScaled);
 }
 
+vec2 computeUnitNormalJacobian(float zx, float zy, vec4 J)
+{
+    vec2 u = vec2(J.x * zx + J.z * zy, J.y * zx + J.w * zy);
+    float len = length(u);
+    return len > 1e-18 ? u / len : vec2(0.0);
+}
+
+bool dfIsNeg(vec2 a)
+{
+    return a.x < 0.0 || (a.x == 0.0 && a.y < 0.0);
+}
+
+void stepFamilyJacobianF32(float zx, float zy, float px, float py, bool addOne, inout vec4 J, inout bool jScaled)
+{
+    float wx = zx;
+    float wy = zy;
+    float preX = 1.0;
+    float preY = 1.0;
+    if (fractalFamily == 1)
+    {
+        if (wx < 0.0) { wx = -wx; preX = -1.0; }
+        if (wy >= 0.0) { wy = -wy; preY = -1.0; }
+    }
+    else if (fractalFamily == 2)
+    {
+        wy = -wy;
+        preY = -1.0;
+    }
+
+    J.xy *= preX;
+    J.zw *= preY;
+
+    float pr;
+    float pi;
+    if (exponent == 2)
+    {
+        pr = 2.0 * wx;
+        pi = 2.0 * wy;
+    }
+    else
+    {
+        float pmx, pmy;
+        complexPowF32(wx, wy, exponent - 1, pmx, pmy);
+        pr = float(exponent) * pmx;
+        pi = float(exponent) * pmy;
+    }
+
+    J = vec4(pr * J.x - pi * J.z, pr * J.y - pi * J.w, pi * J.x + pr * J.z, pi * J.y + pr * J.w);
+
+    float postX = 1.0;
+    float postY = 1.0;
+    if (fractalFamily == 3)
+    {
+        if (px < 0.0) postX = -1.0;
+    }
+    else if (fractalFamily == 4)
+    {
+        if (px < 0.0) postX = -1.0;
+        if (py >= 0.0) postY = -1.0;
+    }
+
+    J.xy *= postX;
+    J.zw *= postY;
+    if (addOne && !jScaled) J.xw += 1.0;
+
+    float f2 = dot(J, J);
+    if (f2 > 1e20 || (jScaled && f2 > 0.0 && f2 < 1e-20))
+    {
+        J *= inversesqrt(f2);
+        jScaled = true;
+    }
+}
+
 vec3 colorOf(bool escaped, float mu, float minR, float trapDist, vec2 normal2D, vec2 pixPos)
 {
     if (!escaped)
@@ -379,7 +462,7 @@ void main()
         return;
     }
 
-    if (interiorStyle == 0 && juliaSet == 0 && exponent == 2)
+    if (fractalFamily == 0 && interiorStyle == 0 && juliaSet == 0 && exponent == 2)
     {
         float xm = cx.x - 0.25;
         float cy2 = cy.x * cy.x;
@@ -398,7 +481,78 @@ void main()
         }
     }
 
-    if (exponent == 100)
+    if (fractalFamily != 0 && exponent != 100)
+    {
+        vec4 J = juliaSet == 1 ? vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0);
+        bool jScaled = false;
+        for (int i = 0; i < steps; i++)
+        {
+            float r2 = zx.x * zx.x + zy.x * zy.x;
+            if (orbitTrap != 0 && i > 0) minTrap = min(minTrap, trapDistance(zx.x, zy.x));
+            if (escapedAt(r2, i, minR, mu))
+            {
+                escaped = true;
+                if (normalLighting == 1)
+                {
+                    float fx = zx.x, fy = zy.x;
+                    if (r2 < 1e12)
+                    {
+                        float wx = fx, wy = fy;
+                        if (fractalFamily == 1) { wx = abs(wx); wy = -abs(wy); }
+                        else if (fractalFamily == 2) { wy = -wy; }
+                        float pzx, pzy;
+                        complexPowF32(wx, wy, exponent, pzx, pzy);
+                        stepFamilyJacobianF32(fx, fy, pzx, pzy, addOne, J, jScaled);
+                        if (fractalFamily == 3) { pzx = abs(pzx); }
+                        else if (fractalFamily == 4) { pzx = abs(pzx); pzy = -abs(pzy); }
+                        fx = pzx + cx.x;
+                        fy = pzy + cy.x;
+                    }
+                    normal2D = computeUnitNormalJacobian(fx, fy, J);
+                }
+                break;
+            }
+
+            vec2 wx = zx;
+            vec2 wy = zy;
+            if (fractalFamily == 1)
+            {
+                if (dfIsNeg(wx)) wx = vec2(-wx.x, -wx.y);
+                if (!dfIsNeg(wy)) wy = vec2(-wy.x, -wy.y);
+            }
+            else if (fractalFamily == 2)
+            {
+                wy = vec2(-wy.x, -wy.y);
+            }
+
+            vec2 nx;
+            vec2 ny;
+            dfPow(wx, wy, exponent, nx, ny);
+
+            if (normalLighting == 1)
+                stepFamilyJacobianF32(zx.x, zy.x, nx.x, ny.x, addOne, J, jScaled);
+
+            if (fractalFamily == 3)
+            {
+                if (dfIsNeg(nx)) nx = vec2(-nx.x, -nx.y);
+            }
+            else if (fractalFamily == 4)
+            {
+                if (dfIsNeg(nx)) nx = vec2(-nx.x, -nx.y);
+                if (!dfIsNeg(ny)) ny = vec2(-ny.x, -ny.y);
+            }
+
+            zx = dfAdd(nx, cx);
+            zy = dfAdd(ny, cy);
+            if (!(zx.x < 1e20))
+            {
+                mu = float(i);
+                escaped = true;
+                break;
+            }
+        }
+    }
+    else if (exponent == 100)
     {
         for (int i = 0; i < steps; i++)
         {

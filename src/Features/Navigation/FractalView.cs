@@ -52,20 +52,11 @@ public sealed class FractalView
         CenterY = centerY.Round(prec);
     }
 
-    public void ResetFor(bool julia)
+    public void ResetTo(double centerX, double centerY, double scale)
     {
-        if (julia)
-        {
-            CenterX = BigFloat.Zero;
-            CenterY = BigFloat.Zero;
-            Scale = FloatExp.FromDouble(DefaultJuliaScale);
-        }
-        else
-        {
-            CenterX = BigFloat.FromDouble(-0.5);
-            CenterY = BigFloat.Zero;
-            Scale = FloatExp.FromDouble(DefaultMandelbrotScale);
-        }
+        CenterX = BigFloat.FromDouble(centerX);
+        CenterY = BigFloat.FromDouble(centerY);
+        Scale = FloatExp.FromDouble(scale);
     }
 
     public void ScreenToComplex(double px, double py, int width, int height, out double cx, out double cy)

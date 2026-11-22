@@ -21,6 +21,7 @@ uniform int orbitTrap;
 uniform float density;
 uniform float phase;
 uniform int juliaSet;
+uniform int fractalFamily;
 uniform sampler2D paletteLut;
 
 out vec4 finalColor;
@@ -218,6 +219,125 @@ void stepDerivInteger(float zx, float zy, int n, bool addOne, inout vec2 d, inou
     pzy = pmx * zy + pmy * zx;
 }
 
+vec2 computeUnitNormalJacobian(float zx, float zy, vec4 J)
+{
+    vec2 u = vec2(J.x * zx + J.z * zy, J.y * zx + J.w * zy);
+    float len = length(u);
+    return len > 1e-18 ? u / len : vec2(0.0);
+}
+
+bool stepFamilyF32(inout float zx, inout float zy, float cx, float cy, bool addOne, bool trackNormal, inout vec4 J, inout bool jScaled)
+{
+    float wx = zx;
+    float wy = zy;
+    float preX = 1.0;
+    float preY = 1.0;
+    if (fractalFamily == 1)
+    {
+        if (wx < 0.0) { wx = -wx; preX = -1.0; }
+        if (wy >= 0.0) { wy = -wy; preY = -1.0; }
+    }
+    else if (fractalFamily == 2)
+    {
+        wy = -wy;
+        preY = -1.0;
+    }
+
+    if (trackNormal)
+    {
+        J.xy *= preX;
+        J.zw *= preY;
+    }
+
+    float px;
+    float py;
+    float pr = 0.0;
+    float pi = 0.0;
+    if (exponent == 100)
+    {
+        float r2 = wx * wx + wy * wy;
+        if (r2 == 0.0)
+        {
+            if (power > 0.0)
+            {
+                if (trackNormal)
+                    J = (addOne && !jScaled) ? vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0);
+                zx = cx;
+                zy = cy;
+                return true;
+            }
+            return false;
+        }
+
+        float radius = sqrt(r2);
+        float theta = atan(wy, wx);
+        if (trackNormal)
+        {
+            float rp = power * pow(radius, power - 1.0);
+            float ap = (power - 1.0) * theta;
+            pr = rp * cos(ap);
+            pi = rp * sin(ap);
+        }
+
+        float raised = pow(radius, power);
+        float ang = power * theta;
+        px = raised * cos(ang);
+        py = raised * sin(ang);
+    }
+    else if (exponent == 2)
+    {
+        pr = 2.0 * wx;
+        pi = 2.0 * wy;
+        px = wx * wx - wy * wy;
+        py = 2.0 * wx * wy;
+    }
+    else if (trackNormal)
+    {
+        float pmx, pmy;
+        complexPow(wx, wy, exponent - 1, pmx, pmy);
+        pr = float(exponent) * pmx;
+        pi = float(exponent) * pmy;
+        px = pmx * wx - pmy * wy;
+        py = pmx * wy + pmy * wx;
+    }
+    else
+    {
+        complexPow(wx, wy, exponent, px, py);
+    }
+
+    if (trackNormal)
+        J = vec4(pr * J.x - pi * J.z, pr * J.y - pi * J.w, pi * J.x + pr * J.z, pi * J.y + pr * J.w);
+
+    float postX = 1.0;
+    float postY = 1.0;
+    if (fractalFamily == 3)
+    {
+        if (px < 0.0) { px = -px; postX = -1.0; }
+    }
+    else if (fractalFamily == 4)
+    {
+        if (px < 0.0) { px = -px; postX = -1.0; }
+        if (py >= 0.0) { py = -py; postY = -1.0; }
+    }
+
+    if (trackNormal)
+    {
+        J.xy *= postX;
+        J.zw *= postY;
+        if (addOne && !jScaled) J.xw += 1.0;
+        float f2 = dot(J, J);
+        if (f2 > 1e20 || (jScaled && f2 > 0.0 && f2 < 1e-20))
+        {
+            J *= inversesqrt(f2);
+            jScaled = true;
+        }
+    }
+
+    zx = px + cx;
+    zy = py + cy;
+    return zx < 1e20 && zx > -1e20 && zy < 1e20 && zy > -1e20;
+}
+
 vec3 colorOf(bool escaped, float mu, float minR, float trapDist, vec2 normal2D, vec2 pixPos)
 {
     if (!escaped)
@@ -283,7 +403,7 @@ void main()
     }
 
     // Fast cardioid and period-2 bulb rejection for standard Mandelbrot with solid interior.
-    if (interiorStyle == 0 && juliaSet == 0 && exponent == 2)
+    if (fractalFamily == 0 && interiorStyle == 0 && juliaSet == 0 && exponent == 2)
     {
         float xm = cx - 0.25;
         float cy2 = cy * cy;
@@ -311,7 +431,55 @@ void main()
     bool addOne = juliaSet == 0;
     vec2 normal2D = vec2(0.0);
 
-    if (exponent == 100)
+    if (fractalFamily != 0)
+    {
+        vec4 J = juliaSet == 1 ? vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0);
+        bool jScaled = false;
+        float ox = zx;
+        float oy = zy;
+        int period = 8;
+        int check = 0;
+
+        for (int i = 0; i < steps; i++)
+        {
+            float r2 = zx * zx + zy * zy;
+            if (orbitTrap != 0 && i > 0) minTrap = min(minTrap, trapDistance(zx, zy));
+            if (escapedAt(r2, i, minR, mu))
+            {
+                escaped = true;
+                if (normalLighting == 1)
+                {
+                    if (r2 < 1e12)
+                        stepFamilyF32(zx, zy, cx, cy, addOne, true, J, jScaled);
+                    normal2D = computeUnitNormalJacobian(zx, zy, J);
+                }
+                break;
+            }
+
+            if (!stepFamilyF32(zx, zy, cx, cy, addOne, normalLighting == 1, J, jScaled))
+            {
+                mu = float(i);
+                escaped = true;
+                break;
+            }
+
+            if (interiorStyle == 0 && orbitTrap == 0 && exponent != 100)
+            {
+                if (abs(zx - ox) <= 1e-7 && abs(zy - oy) <= 1e-7)
+                    break;
+
+                check++;
+                if (check >= period)
+                {
+                    ox = zx;
+                    oy = zy;
+                    check = 0;
+                    period = min(period * 2, 1024);
+                }
+            }
+        }
+    }
+    else if (exponent == 100)
     {
         for (int i = 0; i < steps; i++)
         {

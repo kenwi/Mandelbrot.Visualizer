@@ -31,7 +31,7 @@ public static class SimdMultibrot
         float[] minRadius,
         bool needsMinRadius = true)
     {
-        if (!IsSupported || !FormulaParams.TryGetPositiveSimdExponent(formula.Power, out int exponent) || formula.MaxIterations < 1)
+        if (!IsSupported || formula.Family != FractalFamily.Multibrot || !FormulaParams.TryGetPositiveSimdExponent(formula.Power, out int exponent) || formula.MaxIterations < 1)
         {
             MultibrotFormula.EvaluateScalarRow(width, height, y, originX, originY, halfW, halfH, formula, mu, minRadius, needsMinRadius);
             return;

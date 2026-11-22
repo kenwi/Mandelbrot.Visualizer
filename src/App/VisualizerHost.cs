@@ -24,7 +24,8 @@ public sealed record LaunchOptions(
     float? LightX = null,
     float? LightY = null,
     double? LightAngle = null,
-    bool Fullscreen = false);
+    bool Fullscreen = false,
+    FractalFamily? Family = null);
 
 /// <summary>
 /// Thin application shell owning the Raylib window lifecycle and frame loop,
@@ -70,14 +71,20 @@ public sealed class VisualizerHost : IDisposable
             });
         }
 
-        if (options.Power.HasValue || options.MaxIterations.HasValue)
+        if (options.Power.HasValue || options.MaxIterations.HasValue || options.Family.HasValue)
         {
             FormulaParams current = _formula.State;
             _formula.SetFormula(current with
             {
                 Power = options.Power.HasValue ? FormulaParams.ClampNonZeroPower(options.Power.Value) : current.Power,
                 MaxIterations = options.MaxIterations.HasValue ? FormulaParams.ClampIterations(options.MaxIterations.Value) : current.MaxIterations,
+                Family = options.Family ?? current.Family,
             });
+            if (options.Family.HasValue)
+            {
+                _formula.State.GetDefaultView(out double cx, out double cy, out double scale);
+                _navigation.ResetTo(cx, cy, scale);
+            }
         }
 
         if (options.CenterX.HasValue || options.CenterY.HasValue || options.Scale.HasValue)
@@ -186,10 +193,14 @@ public sealed class VisualizerHost : IDisposable
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_F11))
             Raylib.ToggleFullscreen();
 
-        changed |= _navigation.HandleKeys(canvasWidth, canvasHeight, _formula.State.Julia);
-        changed |= _formula.HandleKeys(out bool juliaToggled, out bool interactive);
-        if (juliaToggled)
-            _navigation.ResetFor(_formula.State.Julia);
+        _formula.State.GetDefaultView(out double defaultCx, out double defaultCy, out double defaultScale);
+        changed |= _navigation.HandleKeys(canvasWidth, canvasHeight, defaultCx, defaultCy, defaultScale);
+        changed |= _formula.HandleKeys(out bool viewResetNeeded, out bool interactive);
+        if (viewResetNeeded)
+        {
+            _formula.State.GetDefaultView(out double cx, out double cy, out double scale);
+            _navigation.ResetTo(cx, cy, scale);
+        }
         if (interactive)
             _navigation.Touch();
 

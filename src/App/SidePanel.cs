@@ -43,25 +43,27 @@ public sealed class SidePanel
         bool changed = false;
 
         layout.Title("Multibrot");
-        layout.Label("z  =  z^n  +  c", 22);
+        layout.Label(formula.State.FormulaSubtitle, 22);
 
         changed |= rendering.DrawPanel(ref layout);
         changed |= diagnostics.DrawToggle(ref layout);
         layout.Separator();
 
-        changed |= formula.DrawPowerAndIterations(ref layout, EditScope);
+        changed |= formula.DrawPowerAndIterations(ref layout, EditScope, out bool familyChanged);
         changed |= coloring.DrawPanel(ref layout);
         changed |= formula.DrawJuliaControls(ref layout, EditScope, out bool juliaToggled);
-        if (juliaToggled)
+        if (familyChanged || juliaToggled)
         {
-            navigation.ResetFor(formula.State.Julia);
+            formula.State.GetDefaultView(out double cx, out double cy, out double scale);
+            navigation.ResetTo(cx, cy, scale);
             changed = true;
         }
 
         layout.TwoButtons("Reset view", "Save PNG", out bool resetView, out bool saveImage);
         if (resetView)
         {
-            navigation.ResetFor(formula.State.Julia);
+            formula.State.GetDefaultView(out double cx, out double cy, out double scale);
+            navigation.ResetTo(cx, cy, scale);
             changed = true;
         }
 
@@ -79,7 +81,7 @@ public sealed class SidePanel
         layout.Hint("Shift up/down zoom   double-click zoom");
         layout.Hint("hold [ ] power   - + iterations   C palette");
         layout.Hint("R reset   J julia   G gpu   V simd");
-        layout.Hint("L 3d   M mouse light   T trap");
+        layout.Hint("F fractal   L 3d   M mouse light   T trap");
         layout.Hint("H panel   S save");
 
         return changed;

@@ -6,6 +6,7 @@ An interactive viewer for the Mandelbrot set and its relatives. Every pixel asks
 
 ## Capabilities
 
+- Switch between five fractal families (`Multibrot`, `Burning Ship`, `Tricorn`, `Celtic`, `Buffalo`) with full support for arbitrary power `n`, Julia sets, 3D lighting (2x2 real Jacobian normals), orbit traps, and cursor probing.
 - Pan, zoom, and reset the view with arbitrary-depth zoom for Mandelbrot (`n = 2`), positive whole-number Multibrot (`n = 2..16`), and Julia sets.
 - Set the power `n` from the slider (`-6` to `12`), type any finite number, or hold `[` and `]` to sweep it.
 - Choose `1` to `100,000` iterations (logarithmic slider, text box, or `-`/`+`), or toggle **Auto iterations** to scale the limit with zoom depth.
@@ -99,6 +100,15 @@ Inside means: "if I start at this pixel and keep doing `z = z^n + c` with this s
 
 You can type both parts of `c`. Changing `c` changes which starts survive. Changing `n` still changes the power inside the same rule. The Mandelbrot map and a Julia set are two readings of one formula: either the pixel chooses `c` and you start at zero, or `c` is chosen and the pixel chooses the start.
 
+### Other fractal families
+
+Use the **Fractal** selector (or `F` / `--fractal`) to explore four classic escape-time relatives alongside `Multibrot`, all supporting arbitrary power `n`, Julia mode, orbit traps, and 3D lighting:
+
+- **Burning Ship**: `z = (|Re z| - i|Im z|)^n + c`
+- **Tricorn (Mandelbar)**: `z = conj(z)^n + c`
+- **Celtic**: `z = |Re(z^n)| + i Im(z^n) + c`
+- **Buffalo**: `z = |Re(z^n)| - i|Im(z^n)| + c`
+
 ### Negative powers
 
 A negative `n` includes a reciprocal. `z^-1` is `1/z`, and more negative integers are that idea repeated. After the power, the formula still adds `c`.
@@ -133,6 +143,7 @@ Supported CLI options:
 - `--center re,im` - starting complex center (supports arbitrary decimal digits)
 - `--scale value` - starting viewport half-height (supports scientific notation like `1e-45`)
 - `--power n` - starting exponent `n`
+- `--fractal family` - starting fractal family (`multibrot`, `burningship`, `tricorn`, `celtic`, `buffalo`)
 - `--iter count` - starting max iterations (`1` to `100000`)
 - `--cpu` - start with the CPU renderer instead of GPU shaders
 - `--fullscreen` - launch directly in fullscreen mode
@@ -153,6 +164,7 @@ Pictures saved interactively from the app go to `captures/`.
 | Pan | Drag, or the arrow keys |
 | Zoom | Mouse wheel. Hold Shift and Up to zoom in, Shift and Down to zoom out. Double-click zooms in. Shift double-click zooms out |
 | Power `n` | Slider, text box, or hold `[` and `]`. A tap steps by 0.1 |
+| Fractal | Combo box (`Multibrot`, `Burning Ship`, `Tricorn`, `Celtic`, `Buffalo`), or `F` to cycle |
 | Iterations | Logarithmic slider (`1` to `100,000`), text box, or `-` and `+` |
 | Auto iterations | Checkbox. Scales iteration limit automatically with zoom depth |
 | Palette | Combo box, or `C` to cycle |

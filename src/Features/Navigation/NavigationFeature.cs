@@ -23,7 +23,8 @@ public sealed class NavigationFeature
 
     public void Touch() => _interactUntil = DateTime.UtcNow.AddMilliseconds(180);
 
-    public void ResetFor(bool julia) => _view.ResetFor(julia);
+    public void ResetTo(double centerX, double centerY, double scale)
+        => _view.ResetTo(centerX, centerY, scale);
 
     public void SetExact(BigFloat centerX, BigFloat centerY, FloatExp scale)
         => _view.SetExact(centerX, centerY, scale);
@@ -80,14 +81,14 @@ public sealed class NavigationFeature
         return changed;
     }
 
-    public bool HandleKeys(int canvasWidth, int canvasHeight, bool julia)
+    public bool HandleKeys(int canvasWidth, int canvasHeight, double defaultCenterX, double defaultCenterY, double defaultScale)
     {
         bool changed = false;
         double aspect = canvasWidth / (double)Math.Max(canvasHeight, 1);
 
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_R))
         {
-            _view.ResetFor(julia);
+            _view.ResetTo(defaultCenterX, defaultCenterY, defaultScale);
             changed = true;
         }
 

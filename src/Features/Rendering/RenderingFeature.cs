@@ -21,6 +21,7 @@ public sealed class RenderingFeature : IDisposable
     bool _hasSubmitted;
     bool _lastDeepPerturbation;
     bool _lastPrecisionLimit;
+    bool _lastPrecisionLimitIsFamily;
 
     public bool UseGpu { get; private set; } = true;
     public bool UseSimd { get; private set; }
@@ -99,8 +100,9 @@ public sealed class RenderingFeature : IDisposable
         in ColoringParams coloring,
         bool finalQuality)
     {
-        bool wantsPerturb = view.IsDeepZoom && FormulaParams.SupportsPerturbation(formula.Power, out _);
+        bool wantsPerturb = view.IsDeepZoom && FormulaParams.SupportsPerturbation(formula, out _);
         _lastPrecisionLimit = view.IsDeepZoom && !wantsPerturb;
+        _lastPrecisionLimitIsFamily = _lastPrecisionLimit && formula.Family != FractalFamily.Multibrot;
         _lastDeepPerturbation = wantsPerturb;
 
         if (UsingGpu(coloring.Mode))
@@ -138,7 +140,7 @@ public sealed class RenderingFeature : IDisposable
         if (UsingGpu(coloring.Mode))
             return;
 
-        bool wantsPerturb = view.IsDeepZoom && FormulaParams.SupportsPerturbation(formula.Power, out _);
+        bool wantsPerturb = view.IsDeepZoom && FormulaParams.SupportsPerturbation(formula, out _);
         ReferenceOrbit? orbit = wantsPerturb
             ? _orbitCache.TryGetOrSchedule(view.CenterXExact, view.CenterYExact, view.ScaleExact, formula)
             : null;
@@ -205,7 +207,7 @@ public sealed class RenderingFeature : IDisposable
         if (_orbitCache.IsComputing)
             return "Computing reference orbit...";
         if (_lastPrecisionLimit)
-            return "Precision limit (fractional n)";
+            return _lastPrecisionLimitIsFamily ? "Precision limit (no deep zoom)" : "Precision limit (fractional n)";
         if (UseGpu && !_gpu.IsAvailable)
             return "No shader, using CPU";
         if (UsingGpu(mode))

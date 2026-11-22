@@ -2,6 +2,7 @@
 using Mandelbrot.Visualizer.App;
 using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Diagnostics;
+using Mandelbrot.Visualizer.Features.Formula;
 using Mandelbrot.Visualizer.Shared;
 
 if (args.Contains("--self-test"))
@@ -21,6 +22,7 @@ double? lightAngle = null;
 bool fullscreen = false;
 OrbitTrapMode orbitTrap = OrbitTrapMode.None;
 InteriorStyle? interior = null;
+FractalFamily? family = null;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -85,6 +87,10 @@ for (int i = 0; i < args.Length; i++)
             if (Enum.TryParse<InteriorStyle>(args[++i], true, out InteriorStyle parsedInterior))
                 interior = parsedInterior;
             break;
+        case "--fractal" when i + 1 < args.Length:
+            if (Enum.TryParse<FractalFamily>(args[++i], true, out FractalFamily parsedFamily))
+                family = parsedFamily;
+            break;
     }
 }
 
@@ -103,7 +109,7 @@ if (centerArg != null)
     }
 }
 
-var options = new LaunchOptions(screenshot, centerX, centerY, scale, power, maxIter, forceCpu, normalLighting, orbitTrap, interior, cursorLight, lightX, lightY, lightAngle, fullscreen);
+var options = new LaunchOptions(screenshot, centerX, centerY, scale, power, maxIter, forceCpu, normalLighting, orbitTrap, interior, cursorLight, lightX, lightY, lightAngle, fullscreen, family);
 using var host = new VisualizerHost(options);
 host.Run();
 return 0;

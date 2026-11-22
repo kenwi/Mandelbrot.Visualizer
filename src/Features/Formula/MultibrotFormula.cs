@@ -41,23 +41,151 @@ public static class MultibrotFormula
         double cy,
         double power,
         int maxIterations,
-        bool needsMinRadius = true)
+        bool needsMinRadius = true,
+        FractalFamily family = FractalFamily.Multibrot)
     {
         if (maxIterations < 1 || !double.IsFinite(power) || Math.Abs(power) < FormulaParams.MinNonZeroPower)
             return new Escape(-1f, 0f);
 
-        if (FormulaParams.TryGetIntegerExponent(power, out int n))
+        if (family == FractalFamily.Multibrot)
         {
-            return n switch
+            if (FormulaParams.TryGetIntegerExponent(power, out int n))
             {
-                2 => EvaluateSquare(zx, zy, cx, cy, maxIterations, needsMinRadius),
-                3 => EvaluateCube(zx, zy, cx, cy, maxIterations, needsMinRadius),
-                4 => EvaluateFourth(zx, zy, cx, cy, maxIterations, needsMinRadius),
-                _ => EvaluateInteger(zx, zy, cx, cy, n, maxIterations, needsMinRadius),
-            };
+                return n switch
+                {
+                    2 => EvaluateSquare(zx, zy, cx, cy, maxIterations, needsMinRadius),
+                    3 => EvaluateCube(zx, zy, cx, cy, maxIterations, needsMinRadius),
+                    4 => EvaluateFourth(zx, zy, cx, cy, maxIterations, needsMinRadius),
+                    _ => EvaluateInteger(zx, zy, cx, cy, n, maxIterations, needsMinRadius),
+                };
+            }
+
+            return EvaluateReal(zx, zy, cx, cy, power, maxIterations);
         }
 
-        return EvaluateReal(zx, zy, cx, cy, power, maxIterations);
+        return EvaluateFamily(zx, zy, cx, cy, power, maxIterations, needsMinRadius, family);
+    }
+
+    static Escape EvaluateFamily(
+        double zx,
+        double zy,
+        double cx,
+        double cy,
+        double power,
+        int maxIterations,
+        bool needsMinRadius,
+        FractalFamily family)
+    {
+        const double bailout2 = Bailout * Bailout;
+        double minR = double.MaxValue;
+        double ox = zx, oy = zy;
+        int period = 8;
+        int check = 0;
+        bool isInteger = FormulaParams.TryGetIntegerExponent(power, out int n);
+
+        for (int i = 0; i < maxIterations; i++)
+        {
+            double r2 = zx * zx + zy * zy;
+            if (needsMinRadius && r2 < minR) minR = r2;
+            if (!double.IsFinite(r2) || r2 > bailout2)
+                return Escaped(i, r2, isInteger ? n : power, needsMinRadius ? minR : 0);
+
+            if (!StepFamily(ref zx, ref zy, cx, cy, power, isInteger, n, family))
+                return Stopped(i, needsMinRadius ? minR : 0);
+
+            if (!needsMinRadius && isInteger)
+            {
+                if (Math.Abs(zx - ox) <= PeriodicityEpsilon && Math.Abs(zy - oy) <= PeriodicityEpsilon)
+                    return new Escape(-1f, 0f);
+
+                if (++check >= period)
+                {
+                    ox = zx;
+                    oy = zy;
+                    check = 0;
+                    if (period < 1024) period <<= 1;
+                }
+            }
+        }
+
+        return needsMinRadius ? Inside(minR) : new Escape(-1f, 0f);
+    }
+
+    static bool StepFamily(
+        ref double zx,
+        ref double zy,
+        double cx,
+        double cy,
+        double power,
+        bool isInteger,
+        int n,
+        FractalFamily family)
+    {
+        double wx = zx;
+        double wy = zy;
+        if (family == FractalFamily.BurningShip)
+        {
+            wx = Math.Abs(wx);
+            wy = -Math.Abs(wy);
+        }
+        else if (family == FractalFamily.Tricorn)
+        {
+            wy = -wy;
+        }
+
+        double px;
+        double py;
+        if (isInteger)
+        {
+            if (n == 2)
+            {
+                px = wx * wx - wy * wy;
+                py = 2.0 * wx * wy;
+            }
+            else
+            {
+                px = wx;
+                py = wy;
+                if (!PowInteger(ref px, ref py, n))
+                    return false;
+            }
+        }
+        else
+        {
+            double r2 = wx * wx + wy * wy;
+            if (r2 == 0.0)
+            {
+                if (power > 0.0)
+                {
+                    zx = cx;
+                    zy = cy;
+                    return true;
+                }
+
+                return false;
+            }
+
+            double radius = Math.Sqrt(r2);
+            double theta = Math.Atan2(wy, wx);
+            double raised = Math.Pow(radius, power);
+            double angle = power * theta;
+            px = raised * Math.Cos(angle);
+            py = raised * Math.Sin(angle);
+        }
+
+        if (family == FractalFamily.Celtic)
+        {
+            px = Math.Abs(px);
+        }
+        else if (family == FractalFamily.Buffalo)
+        {
+            px = Math.Abs(px);
+            py = -Math.Abs(py);
+        }
+
+        zx = px + cx;
+        zy = py + cy;
+        return double.IsFinite(zx) && double.IsFinite(zy);
     }
 
     public static OrbitProbe Probe(
@@ -66,15 +194,36 @@ public static class MultibrotFormula
         double cx,
         double cy,
         double power,
-        int maxIterations)
+        int maxIterations,
+        FractalFamily family = FractalFamily.Multibrot)
     {
         if (maxIterations < 1 || !double.IsFinite(power) || Math.Abs(power) < FormulaParams.MinNonZeroPower)
             return new OrbitProbe(true, 0, -1f, zx, zy, 0f);
 
         const double bailout2 = Bailout * Bailout;
         double minR = double.MaxValue;
+        bool isInteger = FormulaParams.TryGetIntegerExponent(power, out int n);
 
-        if (FormulaParams.TryGetIntegerExponent(power, out int n))
+        if (family != FractalFamily.Multibrot)
+        {
+            for (int i = 0; i < maxIterations; i++)
+            {
+                double r2 = zx * zx + zy * zy;
+                if (r2 < minR) minR = r2;
+                if (!double.IsFinite(r2) || r2 > bailout2)
+                {
+                    Escape esc = Escaped(i, r2, isInteger ? n : power, minR);
+                    return new OrbitProbe(false, i, esc.Mu, zx, zy, esc.MinRadius);
+                }
+
+                if (!StepFamily(ref zx, ref zy, cx, cy, power, isInteger, n, family))
+                    return new OrbitProbe(false, i, i, double.NaN, double.NaN, Radius(minR));
+            }
+
+            return new OrbitProbe(true, maxIterations, -1f, zx, zy, Radius(minR));
+        }
+
+        if (isInteger)
         {
             if (n == 2)
             {
@@ -172,6 +321,7 @@ public static class MultibrotFormula
         int row = y * width;
         bool useCardioidCheck = !needsMinRadius
             && !formula.Julia
+            && formula.Family == FractalFamily.Multibrot
             && FormulaParams.TryGetIntegerExponent(formula.Power, out int n)
             && n == 2;
 
@@ -186,8 +336,8 @@ public static class MultibrotFormula
             }
 
             Escape escape = formula.Julia
-                ? Evaluate(cx, cy, formula.JuliaRe, formula.JuliaIm, formula.Power, formula.MaxIterations, needsMinRadius)
-                : Evaluate(0, 0, cx, cy, formula.Power, formula.MaxIterations, needsMinRadius);
+                ? Evaluate(cx, cy, formula.JuliaRe, formula.JuliaIm, formula.Power, formula.MaxIterations, needsMinRadius, formula.Family)
+                : Evaluate(0, 0, cx, cy, formula.Power, formula.MaxIterations, needsMinRadius, formula.Family);
             mu[row + x] = escape.Mu;
             minRadius[row + x] = escape.MinRadius;
         }
@@ -561,6 +711,7 @@ public static class MultibrotFormula
         int row = y * width;
         bool useCardioidCheck = !needsMinRadius
             && !formula.Julia
+            && formula.Family == FractalFamily.Multibrot
             && FormulaParams.TryGetIntegerExponent(formula.Power, out int intExp)
             && intExp == 2;
 
@@ -580,9 +731,9 @@ public static class MultibrotFormula
             }
 
             if (formula.Julia)
-                EvaluateShadedPoint(cx, cy, formula.JuliaRe, formula.JuliaIm, formula.Power, formula.MaxIterations, true, needsMinRadius, computeNormals, orbitTrapMode, out mu[idx], out minRadius[idx], out trapDist[idx], out normalX[idx], out normalY[idx]);
+                EvaluateShadedPoint(cx, cy, formula.JuliaRe, formula.JuliaIm, formula.Power, formula.MaxIterations, true, formula.Family, needsMinRadius, computeNormals, orbitTrapMode, out mu[idx], out minRadius[idx], out trapDist[idx], out normalX[idx], out normalY[idx]);
             else
-                EvaluateShadedPoint(0, 0, cx, cy, formula.Power, formula.MaxIterations, false, needsMinRadius, computeNormals, orbitTrapMode, out mu[idx], out minRadius[idx], out trapDist[idx], out normalX[idx], out normalY[idx]);
+                EvaluateShadedPoint(0, 0, cx, cy, formula.Power, formula.MaxIterations, false, formula.Family, needsMinRadius, computeNormals, orbitTrapMode, out mu[idx], out minRadius[idx], out trapDist[idx], out normalX[idx], out normalY[idx]);
         }
     }
 
@@ -594,6 +745,7 @@ public static class MultibrotFormula
         double power,
         int maxIterations,
         bool julia,
+        FractalFamily family,
         bool needsMinRadius,
         bool computeNormals,
         int orbitTrapMode,
@@ -611,6 +763,12 @@ public static class MultibrotFormula
             outMu = -1f;
             outMinRadius = 0f;
             outTrapDist = 0f;
+            return;
+        }
+
+        if (family != FractalFamily.Multibrot)
+        {
+            EvaluateShadedFamilyPoint(zx, zy, cx, cy, power, maxIterations, julia, family, needsMinRadius, computeNormals, orbitTrapMode, out outMu, out outMinRadius, out outTrapDist, out outNx, out outNy);
             return;
         }
 
@@ -781,6 +939,271 @@ public static class MultibrotFormula
             double angle = power * theta;
             zx = raised * Math.Cos(angle) + cx;
             zy = raised * Math.Sin(angle) + cy;
+        }
+    }
+
+    static void EvaluateShadedFamilyPoint(
+        double zx,
+        double zy,
+        double cx,
+        double cy,
+        double power,
+        int maxIterations,
+        bool julia,
+        FractalFamily family,
+        bool needsMinRadius,
+        bool computeNormals,
+        int orbitTrapMode,
+        out float outMu,
+        out float outMinRadius,
+        out float outTrapDist,
+        out float outNx,
+        out float outNy)
+    {
+        outNx = 0f;
+        outNy = 0f;
+
+        const double bailout2 = Bailout * Bailout;
+        double minR = double.MaxValue;
+        double minTrap = double.MaxValue;
+        double jxx = julia ? 1.0 : 0.0;
+        double jxy = 0.0;
+        double jyx = 0.0;
+        double jyy = julia ? 1.0 : 0.0;
+        bool jScaled = false;
+        bool addOne = !julia;
+        bool trackTrap = orbitTrapMode != 0;
+        bool isInteger = FormulaParams.TryGetIntegerExponent(power, out int n);
+
+        for (int i = 0; i < maxIterations; i++)
+        {
+            double r2 = zx * zx + zy * zy;
+            if (needsMinRadius && r2 < minR) minR = r2;
+
+            if (!double.IsFinite(r2) || r2 > bailout2)
+            {
+                Escape esc = Escaped(i, r2, isInteger ? n : power, needsMinRadius ? minR : 0);
+                outMu = esc.Mu;
+                outMinRadius = esc.MinRadius;
+                outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : TrapDistance(zx, zy, orbitTrapMode)) : 0f;
+
+                if (computeNormals)
+                {
+                    if (r2 < 1e12)
+                        StepFamilyJacobian(ref zx, ref zy, cx, cy, power, isInteger, n, family, addOne, true, ref jxx, ref jxy, ref jyx, ref jyy, ref jScaled);
+                    ComputeUnitNormalFromJacobian(zx, zy, jxx, jxy, jyx, jyy, out outNx, out outNy);
+                }
+
+                return;
+            }
+
+            if (trackTrap && i > 0)
+            {
+                double td = TrapDistance(zx, zy, orbitTrapMode);
+                if (td < minTrap) minTrap = td;
+            }
+
+            if (!StepFamilyJacobian(ref zx, ref zy, cx, cy, power, isInteger, n, family, addOne, computeNormals, ref jxx, ref jxy, ref jyx, ref jyy, ref jScaled))
+            {
+                outMu = i;
+                outMinRadius = needsMinRadius ? Radius(minR) : 0f;
+                outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : 0.0) : 0f;
+                return;
+            }
+        }
+
+        outMu = -1f;
+        outMinRadius = needsMinRadius ? Radius(minR) : 0f;
+        outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : TrapDistance(zx, zy, orbitTrapMode)) : 0f;
+    }
+
+    static bool StepFamilyJacobian(
+        ref double zx,
+        ref double zy,
+        double cx,
+        double cy,
+        double power,
+        bool isInteger,
+        int n,
+        FractalFamily family,
+        bool addOne,
+        bool computeNormals,
+        ref double jxx,
+        ref double jxy,
+        ref double jyx,
+        ref double jyy,
+        ref bool jScaled)
+    {
+        double wx = zx;
+        double wy = zy;
+        double preX = 1.0;
+        double preY = 1.0;
+        if (family == FractalFamily.BurningShip)
+        {
+            if (wx < 0.0) { wx = -wx; preX = -1.0; }
+            if (wy >= 0.0) { wy = -wy; preY = -1.0; }
+        }
+        else if (family == FractalFamily.Tricorn)
+        {
+            wy = -wy;
+            preY = -1.0;
+        }
+
+        if (computeNormals)
+        {
+            jxx *= preX;
+            jxy *= preX;
+            jyx *= preY;
+            jyy *= preY;
+        }
+
+        double px;
+        double py;
+        double pr = 0.0;
+        double pi = 0.0;
+        if (isInteger)
+        {
+            if (n == 2)
+            {
+                pr = 2.0 * wx;
+                pi = 2.0 * wy;
+                px = wx * wx - wy * wy;
+                py = 2.0 * wx * wy;
+            }
+            else if (computeNormals)
+            {
+                double pmx = wx;
+                double pmy = wy;
+                if (!PowInteger(ref pmx, ref pmy, n - 1))
+                    return false;
+                pr = n * pmx;
+                pi = n * pmy;
+                px = pmx * wx - pmy * wy;
+                py = pmx * wy + pmy * wx;
+            }
+            else
+            {
+                px = wx;
+                py = wy;
+                if (!PowInteger(ref px, ref py, n))
+                    return false;
+            }
+        }
+        else
+        {
+            double r2 = wx * wx + wy * wy;
+            if (r2 == 0.0)
+            {
+                if (power > 0.0)
+                {
+                    if (computeNormals)
+                    {
+                        jxx = addOne && !jScaled ? 1.0 : 0.0;
+                        jxy = 0.0;
+                        jyx = 0.0;
+                        jyy = addOne && !jScaled ? 1.0 : 0.0;
+                    }
+
+                    zx = cx;
+                    zy = cy;
+                    return true;
+                }
+
+                return false;
+            }
+
+            double radius = Math.Sqrt(r2);
+            double theta = Math.Atan2(wy, wx);
+            if (computeNormals)
+            {
+                double rp = power * Math.Pow(radius, power - 1.0);
+                double ap = (power - 1.0) * theta;
+                pr = rp * Math.Cos(ap);
+                pi = rp * Math.Sin(ap);
+            }
+
+            double raised = Math.Pow(radius, power);
+            double angle = power * theta;
+            px = raised * Math.Cos(angle);
+            py = raised * Math.Sin(angle);
+        }
+
+        if (computeNormals)
+        {
+            double njxx = pr * jxx - pi * jyx;
+            double njxy = pr * jxy - pi * jyy;
+            double njyx = pi * jxx + pr * jyx;
+            double njyy = pi * jxy + pr * jyy;
+            jxx = njxx;
+            jxy = njxy;
+            jyx = njyx;
+            jyy = njyy;
+        }
+
+        double postX = 1.0;
+        double postY = 1.0;
+        if (family == FractalFamily.Celtic)
+        {
+            if (px < 0.0) { px = -px; postX = -1.0; }
+        }
+        else if (family == FractalFamily.Buffalo)
+        {
+            if (px < 0.0) { px = -px; postX = -1.0; }
+            if (py >= 0.0) { py = -py; postY = -1.0; }
+        }
+
+        if (computeNormals)
+        {
+            jxx *= postX;
+            jxy *= postX;
+            jyx *= postY;
+            jyy *= postY;
+
+            if (addOne && !jScaled)
+            {
+                jxx += 1.0;
+                jyy += 1.0;
+            }
+
+            double f2 = jxx * jxx + jxy * jxy + jyx * jyx + jyy * jyy;
+            if (f2 > 1e20 || (jScaled && f2 > 0.0 && f2 < 1e-20))
+            {
+                double inv = 1.0 / Math.Sqrt(f2);
+                jxx *= inv;
+                jxy *= inv;
+                jyx *= inv;
+                jyy *= inv;
+                jScaled = true;
+            }
+        }
+
+        zx = px + cx;
+        zy = py + cy;
+        return double.IsFinite(zx) && double.IsFinite(zy);
+    }
+
+    static void ComputeUnitNormalFromJacobian(
+        double zx,
+        double zy,
+        double jxx,
+        double jxy,
+        double jyx,
+        double jyy,
+        out float nx,
+        out float ny)
+    {
+        double ux = jxx * zx + jyx * zy;
+        double uy = jxy * zx + jyy * zy;
+        double len = Math.Sqrt(ux * ux + uy * uy);
+        if (double.IsFinite(len) && len > 1e-18)
+        {
+            nx = (float)(ux / len);
+            ny = (float)(uy / len);
+        }
+        else
+        {
+            nx = 0f;
+            ny = 0f;
         }
     }
 }

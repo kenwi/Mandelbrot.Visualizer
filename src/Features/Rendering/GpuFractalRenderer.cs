@@ -341,6 +341,7 @@ public sealed class GpuFractalRenderer : IFractalBackend
         float density = (float)request.Coloring.Density;
         float phase = (float)request.Coloring.Phase;
         int julia = request.Formula.Julia ? 1 : 0;
+        int fractalFamily = (int)request.Formula.Family;
 
         program.Set(program.ResolutionLoc, resolution, ShaderUniformDataType.SHADER_UNIFORM_VEC2);
         program.Set(program.CenterLoc, center, ShaderUniformDataType.SHADER_UNIFORM_VEC4);
@@ -360,6 +361,7 @@ public sealed class GpuFractalRenderer : IFractalBackend
         program.Set(program.DensityLoc, density, ShaderUniformDataType.SHADER_UNIFORM_FLOAT);
         program.Set(program.PhaseLoc, phase, ShaderUniformDataType.SHADER_UNIFORM_FLOAT);
         program.Set(program.JuliaLoc, julia, ShaderUniformDataType.SHADER_UNIFORM_INT);
+        program.Set(program.FractalFamilyLoc, fractalFamily, ShaderUniformDataType.SHADER_UNIFORM_INT);
     }
 
     void SetPerturbUniforms(int width, int height, in RenderRequest request, ReferenceOrbit orbit)
@@ -450,6 +452,7 @@ public sealed class GpuFractalRenderer : IFractalBackend
         public int DensityLoc;
         public int PhaseLoc;
         public int JuliaLoc;
+        public int FractalFamilyLoc;
 
         public static bool TryLoad(string vertexSource, string fragmentSource, out ShaderProgram program)
         {
@@ -484,6 +487,7 @@ public sealed class GpuFractalRenderer : IFractalBackend
                 DensityLoc = Raylib.GetShaderLocation(shader, "density"),
                 PhaseLoc = Raylib.GetShaderLocation(shader, "phase"),
                 JuliaLoc = Raylib.GetShaderLocation(shader, "juliaSet"),
+                FractalFamilyLoc = Raylib.GetShaderLocation(shader, "fractalFamily"),
             };
             return true;
         }
