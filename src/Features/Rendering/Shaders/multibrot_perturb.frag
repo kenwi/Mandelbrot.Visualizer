@@ -15,6 +15,11 @@ uniform int refLength;
 uniform int paletteId;
 uniform int smoothColor;
 uniform int interiorStyle;
+uniform int normalLighting;
+uniform int cursorLight;
+uniform vec2 lightPos;
+uniform float lightAngle;
+uniform int orbitTrap;
 uniform float density;
 uniform float phase;
 uniform int juliaSet;
@@ -203,15 +208,110 @@ vec3 interiorColor(float minR)
     return vec3(8.0 + 40.0 * g, 12.0 + 28.0 * g, 32.0 + 90.0 * g) / 255.0;
 }
 
-vec3 colorOf(bool escaped, float mu, float minR)
+float trapDistance(vec2 z)
 {
-    if (!escaped) return interiorColor(minR);
+    if (orbitTrap == 1) return length(z);
+    if (orbitTrap == 2) return min(abs(z.x), abs(z.y)) + max(0.0, length(z) - 2.0);
+    if (orbitTrap == 3) return abs(length(z) - 1.0);
+    if (orbitTrap == 4) return abs(max(abs(z.x), abs(z.y)) - 1.0);
+    return 0.0;
+}
 
-    float value = smoothColor == 1 ? mu : floor(mu);
-    float t = value * 0.035 * max(density, 0.05) + phase;
-    vec3 color = samplePalette(paletteId, t);
-    float shade = clamp(tanh(mu / 9.0), 0.0, 1.0);
-    return color * shade;
+vec3 sampleOrbitTrap(float dist)
+{
+    float d = max(dist, 0.0);
+    float t = log(1.0 + d * 6.0) * 0.55 * max(density, 0.05) + phase;
+    vec3 baseCol = samplePalette(paletteId, t);
+    float filament = exp(-d * 3.2);
+    float falloff = 1.0 / (1.0 + d * 1.4);
+    float shade = 0.35 + 0.65 * falloff;
+    return mix(baseCol * shade, baseCol * 1.15 + vec3(0.18), filament * 0.65);
+}
+
+vec3 applyNormalLighting(vec3 col, vec2 u, vec2 pixPos)
+{
+    vec3 N = normalize(vec3(u.x, u.y, 1.0 / 1.75));
+    vec3 L;
+    float atten = 1.0;
+    if (cursorLight == 1)
+    {
+        vec3 toLight = vec3(lightPos - pixPos, 0.52);
+        float dist = length(toLight);
+        L = toLight / max(dist, 1e-5);
+        atten = 1.0 / (1.0 + 0.55 * dist * dist);
+    }
+    else
+    {
+        L = vec3(cos(lightAngle) * 0.7342162, sin(lightAngle) * 0.7342162, 0.6789146);
+    }
+
+    vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
+    float diff = max(dot(N, L), 0.0);
+    float spec = pow(max(dot(N, H), 0.0), 24.0);
+    if (cursorLight == 1)
+        return clamp(col * (0.22 + 0.98 * diff * atten) + vec3(0.42 * spec * atten), 0.0, 1.0);
+    return clamp(col * (0.24 + 0.92 * diff) + vec3(0.38 * spec), 0.0, 1.0);
+}
+
+vec2 computeUnitNormal(vec2 z, vec2 d)
+{
+    vec2 u = vec2(z.x * d.x + z.y * d.y, z.y * d.x - z.x * d.y);
+    float len = length(u);
+    return len > 1e-18 ? u / len : vec2(0.0);
+}
+
+void renormDeriv(inout vec2 d, inout bool dScaled)
+{
+    float d2 = dot(d, d);
+    if (d2 > 1e20 || (dScaled && d2 > 0.0 && d2 < 1e-20))
+    {
+        d *= inversesqrt(d2);
+        dScaled = true;
+    }
+}
+
+void stepDeriv(vec2 z, int n, bool addOne, inout vec2 d, inout bool dScaled)
+{
+    if (n == 2)
+    {
+        d = 2.0 * cmul(z, d);
+    }
+    else
+    {
+        vec2 pm = cpow(z, n - 1);
+        d = float(n) * cmul(pm, d);
+    }
+
+    if (addOne && !dScaled) d.x += 1.0;
+    renormDeriv(d, dScaled);
+}
+
+vec3 colorOf(bool escaped, float mu, float minR, float trapDist, vec2 normal2D, vec2 pixPos)
+{
+    if (!escaped)
+    {
+        if (orbitTrap != 0 && interiorStyle == 1)
+            return sampleOrbitTrap(trapDist) * 0.85;
+        return interiorColor(minR);
+    }
+
+    vec3 color;
+    if (orbitTrap != 0)
+    {
+        color = sampleOrbitTrap(trapDist);
+    }
+    else
+    {
+        float value = smoothColor == 1 ? mu : floor(mu);
+        float t = value * 0.035 * max(density, 0.05) + phase;
+        color = samplePalette(paletteId, t);
+        float shade = clamp(tanh(mu / 9.0), 0.0, 1.0);
+        color *= shade;
+    }
+
+    if (normalLighting == 1)
+        color = applyNormalLighting(color, normal2D, pixPos);
+    return color;
 }
 
 void main()
@@ -230,6 +330,12 @@ void main()
     bool escaped = false;
     float mu = -1.0;
     float minR = 1e20;
+    float minTrap = 1e20;
+    vec2 d = juliaSet == 1 ? vec2(1.0, 0.0) : vec2(0.0, 0.0);
+    bool dScaled = false;
+    bool addOne = juliaSet == 0;
+    vec2 normal2D = vec2(0.0);
+    vec2 lastZ = vec2(0.0);
 
     if (scaleExp > -105)
     {
@@ -243,10 +349,22 @@ void main()
         {
             vec2 Z = fetchRef(refIdx);
             vec2 fullZ = Z + dz;
+            lastZ = fullZ;
             float r2 = dot(fullZ, fullZ);
+            if (orbitTrap != 0 && i > 0) minTrap = min(minTrap, trapDistance(fullZ));
             if (escapedAt(r2, i, minR, mu))
             {
                 escaped = true;
+                if (normalLighting == 1)
+                {
+                    vec2 fz = fullZ;
+                    if (r2 < 1e12)
+                    {
+                        stepDeriv(fz, exponent, addOne, d, dScaled);
+                        fz = cpow(fz, exponent);
+                    }
+                    normal2D = computeUnitNormal(fz, d);
+                }
                 break;
             }
 
@@ -264,18 +382,34 @@ void main()
                 vec2 z = fullZ;
                 for (int j = i; j < steps; j++)
                 {
+                    lastZ = z;
                     float zr2 = dot(z, z);
+                    if (orbitTrap != 0 && j > 0) minTrap = min(minTrap, trapDistance(z));
                     if (escapedAt(zr2, j, minR, mu))
                     {
                         escaped = true;
+                        if (normalLighting == 1)
+                        {
+                            vec2 fz = z;
+                            if (zr2 < 1e12)
+                            {
+                                stepDeriv(fz, exponent, false, d, dScaled);
+                                fz = cpow(fz, exponent) + juliaC;
+                            }
+                            normal2D = computeUnitNormal(fz, d);
+                        }
                         break;
                     }
 
+                    if (normalLighting == 1)
+                        stepDeriv(z, exponent, false, d, dScaled);
                     z = cpow(z, exponent) + juliaC;
                 }
                 break;
             }
 
+            if (normalLighting == 1)
+                stepDeriv(fullZ, exponent, addOne, d, dScaled);
             dz = perturbStepF32(Z, dz, exponent) + addC;
             refIdx++;
         }
@@ -292,10 +426,22 @@ void main()
             vec2 Z = fetchRef(refIdx);
             cxp fullZExp = cxpAddVec2(dz, Z);
             vec2 fullZ = cxpToVec2(fullZExp);
+            lastZ = fullZ;
             float r2 = dot(fullZ, fullZ);
+            if (orbitTrap != 0 && i > 0) minTrap = min(minTrap, trapDistance(fullZ));
             if (escapedAt(r2, i, minR, mu))
             {
                 escaped = true;
+                if (normalLighting == 1)
+                {
+                    vec2 fz = fullZ;
+                    if (r2 < 1e12)
+                    {
+                        stepDeriv(fz, exponent, addOne, d, dScaled);
+                        fz = cpow(fz, exponent);
+                    }
+                    normal2D = computeUnitNormal(fz, d);
+                }
                 break;
             }
 
@@ -313,22 +459,41 @@ void main()
                 vec2 z = fullZ;
                 for (int j = i; j < steps; j++)
                 {
+                    lastZ = z;
                     float zr2 = dot(z, z);
+                    if (orbitTrap != 0 && j > 0) minTrap = min(minTrap, trapDistance(z));
                     if (escapedAt(zr2, j, minR, mu))
                     {
                         escaped = true;
+                        if (normalLighting == 1)
+                        {
+                            vec2 fz = z;
+                            if (zr2 < 1e12)
+                            {
+                                stepDeriv(fz, exponent, false, d, dScaled);
+                                fz = cpow(fz, exponent) + juliaC;
+                            }
+                            normal2D = computeUnitNormal(fz, d);
+                        }
                         break;
                     }
 
+                    if (normalLighting == 1)
+                        stepDeriv(z, exponent, false, d, dScaled);
                     z = cpow(z, exponent) + juliaC;
                 }
                 break;
             }
 
+            if (normalLighting == 1)
+                stepDeriv(fullZ, exponent, addOne, d, dScaled);
             dz = cxpAdd(perturbStepCxp(Z, dz, exponent), addC);
             refIdx++;
         }
     }
 
-    finalColor = vec4(colorOf(escaped, mu, minR), 1.0);
+    float aspect = resolution.x / max(resolution.y, 1.0);
+    vec2 pixPos = vec2((px / resolution.x - 0.5) * aspect, -(py / resolution.y - 0.5));
+    float finalTrap = orbitTrap != 0 ? (minTrap < 1e15 ? minTrap : trapDistance(lastZ)) : 0.0;
+    finalColor = vec4(colorOf(escaped, mu, minR, finalTrap, normal2D, pixPos), 1.0);
 }

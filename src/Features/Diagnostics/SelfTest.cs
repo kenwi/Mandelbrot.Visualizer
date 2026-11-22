@@ -32,6 +32,7 @@ public static class SelfTest
         ok &= Report(BigFloatAndFloatExpValid(out string bigMsg), bigMsg, bigMsg);
         ok &= Report(DeepPerturbationMatchesBigFloat(out string perturbMsg), perturbMsg, perturbMsg);
         ok &= Report(CursorProbeMatchesFormula(out string probeMsg), probeMsg, probeMsg);
+        ok &= Report(ShadedLightingAndOrbitTrapValid(out string shadedMsg), shadedMsg, shadedMsg);
 
         Console.WriteLine(ok ? "self-test passed" : "self-test failed");
         return ok;
@@ -315,6 +316,104 @@ public static class SelfTest
         }
 
         message = "cursor orbit probe matches scalar and deep-zoom perturbation formulas";
+        return true;
+    }
+
+    static bool ShadedLightingAndOrbitTrapValid(out string message)
+    {
+        const int width = 32;
+        const int height = 16;
+        var formula = new FormulaParams(2, 160, false, -0.8, 0.156);
+        var mu = new float[width * height];
+        var minR = new float[width * height];
+        var trap = new float[width * height];
+        var nx = new float[width * height];
+        var ny = new float[width * height];
+
+        double halfH = 1.35;
+        double halfW = halfH * width / height;
+
+        for (int y = 0; y < height; y++)
+            MultibrotFormula.EvaluateShadedRow(width, height, y, -0.5, 0.0, halfW, halfH, formula, mu, minR, trap, nx, ny, true, true, (int)OrbitTrapMode.Cross);
+
+        int escapedChecked = 0;
+        for (int y = 0; y < height / 2; y++)
+        {
+            int mirror = height - 1 - y;
+            for (int x = 0; x < width; x++)
+            {
+                int a = y * width + x;
+                int b = mirror * width + x;
+                if (mu[a] >= 0)
+                {
+                    escapedChecked++;
+                    float len = MathF.Sqrt(nx[a] * nx[a] + ny[a] * ny[a]);
+                    if (MathF.Abs(len - 1f) > 1e-3f)
+                    {
+                        message = $"normal at ({x},{y}) was not unit length ({len})";
+                        return false;
+                    }
+
+                    if (MathF.Abs(nx[a] - nx[b]) > 1e-3f || MathF.Abs(ny[a] + ny[b]) > 1e-3f)
+                    {
+                        message = $"normal conjugate symmetry failed at ({x},{y})";
+                        return false;
+                    }
+
+                    if (trap[a] < 0f || !float.IsFinite(trap[a]) || MathF.Abs(trap[a] - trap[b]) > 1e-3f)
+                    {
+                        message = $"orbit trap symmetry/validity failed at ({x},{y}) ({trap[a]} vs {trap[b]})";
+                        return false;
+                    }
+                }
+            }
+        }
+
+        if (escapedChecked == 0)
+        {
+            message = "shaded test had no escaped pixels";
+            return false;
+        }
+
+        // Verify deep-zoom perturbation shaded row at 1e-25 produces finite unit normals and trap distances.
+        FloatExp.TryParse("1e-25", out FloatExp scale);
+        int prec = BigFloat.RequiredBits(scale) + 96;
+        BigFloat.TryParseDecimal("-0.743643887037158704752191506114774", prec, out BigFloat refX);
+        BigFloat.TryParseDecimal("0.131825904205311970493132056385139", prec, out BigFloat refY);
+        var deepFormula = new FormulaParams(2, 1200, false, -0.8, 0.156);
+        ReferenceOrbit? orbit = ReferenceOrbit.ComputeBest(refX, refY, scale, deepFormula);
+        if (orbit == null)
+        {
+            message = "shaded deep-zoom test failed to build reference orbit";
+            return false;
+        }
+
+        FloatExp refOffX = BigFloat.Sub(refX, orbit.RefRe, prec).ToFloatExp();
+        FloatExp refOffY = BigFloat.Sub(refY, orbit.RefIm, prec).ToFloatExp();
+        FloatExp deepHalfW = scale * (width / (double)height);
+        var dMu = new float[width * height];
+        var dMinR = new float[width * height];
+        var dTrap = new float[width * height];
+        var dNx = new float[width * height];
+        var dNy = new float[width * height];
+
+        PerturbationFormula.EvaluateShadedRow(width, height, height / 2, refOffX, refOffY, deepHalfW, scale, orbit, deepFormula, dMu, dMinR, dTrap, dNx, dNy, true, true, (int)OrbitTrapMode.Circle);
+        int rowOff = (height / 2) * width;
+        for (int x = 0; x < width; x++)
+        {
+            int idx = rowOff + x;
+            if (dMu[idx] >= 0)
+            {
+                float len = MathF.Sqrt(dNx[idx] * dNx[idx] + dNy[idx] * dNy[idx]);
+                if (MathF.Abs(len - 1f) > 1e-3f || !float.IsFinite(dTrap[idx]) || dTrap[idx] < 0f)
+                {
+                    message = $"deep shaded row invalid at x={x} (|N|={len}, trap={dTrap[idx]})";
+                    return false;
+                }
+            }
+        }
+
+        message = "3D normal-map lighting and orbit traps valid across scalar and deep-zoom perturbation";
         return true;
     }
 }

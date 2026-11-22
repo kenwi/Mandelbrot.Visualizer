@@ -79,6 +79,7 @@ public sealed class SidePanel
         layout.Hint("Shift up/down zoom   double-click zoom");
         layout.Hint("hold [ ] power   - + iterations   C palette");
         layout.Hint("R reset   J julia   G gpu   V simd");
+        layout.Hint("L 3d   M mouse light   T trap");
         layout.Hint("H panel   S save");
 
         return changed;

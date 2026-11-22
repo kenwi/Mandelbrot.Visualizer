@@ -5,46 +5,93 @@ namespace Mandelbrot.Visualizer.Features.Coloring;
 
 /// <summary>
 /// Vertical slice owning palette, coloring mode, density, phase, smoothing,
-/// interior style, C hotkey, and side-panel coloring controls.
+/// interior style, 3D normal-map lighting, orbit traps, C/L/T hotkeys, and side-panel coloring controls.
 /// </summary>
 public sealed class ColoringFeature
 {
     public ColoringParams State { get; private set; } = ColoringParams.Default;
 
-    public bool HandleKeys()
+    public void SetColoring(ColoringParams coloring) => State = coloring;
+
+    public bool SyncCursorLight(bool hasCursor, float lightX, float lightY)
     {
-        if (!Raylib.IsKeyPressed(KeyboardKey.KEY_C))
+        if (!State.NormalLighting || !State.CursorLight || !hasCursor)
             return false;
 
-        State = State with { Palette = (State.Palette + 1) % Palette.Count };
+        if (MathF.Abs(State.LightX - lightX) < 1e-4f && MathF.Abs(State.LightY - lightY) < 1e-4f)
+            return false;
+
+        State = State with { LightX = lightX, LightY = lightY };
         return true;
+    }
+
+    public bool HandleKeys()
+    {
+        bool changed = false;
+
+        if (Raylib.IsKeyPressed(KeyboardKey.KEY_C))
+        {
+            State = State with { Palette = (State.Palette + 1) % Palette.Count };
+            changed = true;
+        }
+
+        if (Raylib.IsKeyPressed(KeyboardKey.KEY_L))
+        {
+            State = State with { NormalLighting = !State.NormalLighting };
+            changed = true;
+        }
+
+        if (Raylib.IsKeyPressed(KeyboardKey.KEY_M))
+        {
+            bool next = !State.CursorLight;
+            State = State with { CursorLight = next, NormalLighting = next || State.NormalLighting };
+            changed = true;
+        }
+
+        if (Raylib.IsKeyPressed(KeyboardKey.KEY_T))
+        {
+            int next = ((int)State.OrbitTrap + 1) % ColoringParams.OrbitTrapCount;
+            State = State with { OrbitTrap = (OrbitTrapMode)next };
+            changed = true;
+        }
+
+        return changed;
     }
 
     public bool DrawPanel(ref PanelLayout layout)
     {
         bool changed = false;
 
-        layout.Label("Palette");
         int palette = State.Palette;
-        if (layout.Combo(Palette.ComboItems, ref palette))
+        if (layout.LabeledCombo("Palette", Palette.ComboItems, ref palette))
         {
             State = State with { Palette = palette };
             changed = true;
         }
 
-        layout.Label("Coloring");
         int mode = (int)State.Mode;
-        if (layout.Combo("Cyclic;Histogram", ref mode))
+        if (layout.LabeledCombo("Coloring", "Cyclic;Histogram", ref mode))
         {
             State = State with { Mode = (ColoringMode)mode };
             changed = true;
         }
 
-        layout.Label($"Density   {State.Density:0.00}");
-        changed |= layout.Slider(State.Density, 0.25, 4, value => State = State with { Density = value });
+        int interior = (int)State.Interior;
+        if (layout.LabeledCombo("Interior", "Black;Glow", ref interior))
+        {
+            State = State with { Interior = (InteriorStyle)interior };
+            changed = true;
+        }
 
-        layout.Label($"Phase   {State.Phase:0.00}");
-        changed |= layout.Slider(State.Phase, 0, 1, value => State = State with { Phase = value });
+        int trap = (int)State.OrbitTrap;
+        if (layout.LabeledCombo("Orbit trap", ColoringParams.OrbitTrapComboItems, ref trap))
+        {
+            State = State with { OrbitTrap = (OrbitTrapMode)trap };
+            changed = true;
+        }
+
+        changed |= layout.LabeledSlider($"Density {State.Density:0.00}", State.Density, 0.25, 4, value => State = State with { Density = value });
+        changed |= layout.LabeledSlider($"Phase   {State.Phase:0.00}", State.Phase, 0, 1, value => State = State with { Phase = value });
 
         bool smooth = State.Smooth;
         if (layout.Check("Smooth coloring", ref smooth))
@@ -53,13 +100,24 @@ public sealed class ColoringFeature
             changed = true;
         }
 
-        layout.Label("Interior");
-        int interior = (int)State.Interior;
-        if (layout.Combo("Black;Glow", ref interior))
+        bool lighting = State.NormalLighting;
+        if (layout.Check("3D lighting", ref lighting))
         {
-            State = State with { Interior = (InteriorStyle)interior };
+            State = State with { NormalLighting = lighting };
             changed = true;
         }
+
+        if (!State.NormalLighting) RayGui.GuiDisable();
+        bool cursorLight = State.CursorLight;
+        if (layout.Check("Mouse light", ref cursorLight))
+        {
+            State = State with { CursorLight = cursorLight };
+            changed = true;
+        }
+
+        if (State.NormalLighting && State.CursorLight) RayGui.GuiDisable();
+        changed |= layout.LabeledSlider($"Angle   {State.LightAngle:0}d", State.LightAngle, 0, 360, value => State = State with { LightAngle = value });
+        if (!State.NormalLighting || State.CursorLight) RayGui.GuiEnable();
 
         return changed;
     }

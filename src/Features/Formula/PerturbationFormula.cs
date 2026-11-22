@@ -529,4 +529,357 @@ public static class PerturbationFormula
 
         return new MultibrotFormula.OrbitProbe(true, maxIter, -1f, zx, zy, MultibrotFormula.Radius(minR));
     }
+
+    public static void EvaluateShadedRow(
+        int width,
+        int height,
+        int y,
+        FloatExp refOffsetX,
+        FloatExp refOffsetY,
+        FloatExp halfW,
+        FloatExp halfH,
+        ReferenceOrbit orbit,
+        in FormulaParams formula,
+        float[] mu,
+        float[] minRadius,
+        float[] trapDist,
+        float[] normalX,
+        float[] normalY,
+        bool needsMinRadius,
+        bool computeNormals,
+        int orbitTrapMode)
+    {
+        int row = y * width;
+        double v = ((y + 0.5) / height - 0.5) * 2.0;
+        FloatExp dcy = refOffsetY - halfH * v;
+        bool useExtended = halfH <= DoubleUnderflowThreshold;
+
+        if (!useExtended)
+        {
+            double dcyD = dcy.ToDouble();
+            double refOffXD = refOffsetX.ToDouble();
+            double halfWD = halfW.ToDouble();
+
+            for (int x = 0; x < width; x++)
+            {
+                double u = ((x + 0.5) / width - 0.5) * 2.0;
+                double dcxD = refOffXD + halfWD * u;
+                int idx = row + x;
+                EvaluateShadedDouble(dcxD, dcyD, orbit, formula, needsMinRadius, computeNormals, orbitTrapMode, out mu[idx], out minRadius[idx], out trapDist[idx], out normalX[idx], out normalY[idx]);
+            }
+        }
+        else
+        {
+            for (int x = 0; x < width; x++)
+            {
+                double u = ((x + 0.5) / width - 0.5) * 2.0;
+                FloatExp dcx = refOffsetX + halfW * u;
+                int idx = row + x;
+                EvaluateShadedExtended(ComplexExp.FromFloatExp(dcx, dcy), orbit, formula, needsMinRadius, computeNormals, orbitTrapMode, out mu[idx], out minRadius[idx], out trapDist[idx], out normalX[idx], out normalY[idx]);
+            }
+        }
+    }
+
+    static void EvaluateShadedDouble(
+        double dcx,
+        double dcy,
+        ReferenceOrbit orbit,
+        in FormulaParams formula,
+        bool needsMinRadius,
+        bool computeNormals,
+        int orbitTrapMode,
+        out float outMu,
+        out float outMinRadius,
+        out float outTrapDist,
+        out float outNx,
+        out float outNy)
+    {
+        double[] refZx = orbit.Zx;
+        double[] refZy = orbit.Zy;
+        int refLimit = orbit.Length - 1;
+        int exponent = orbit.Exponent;
+        int maxIter = formula.MaxIterations;
+        bool julia = formula.Julia;
+        bool trackTrap = orbitTrapMode != 0;
+        bool addOne = !julia;
+
+        double dzx = julia ? dcx : 0.0;
+        double dzy = julia ? dcy : 0.0;
+        double addCx = julia ? 0.0 : dcx;
+        double addCy = julia ? 0.0 : dcy;
+
+        double derX = julia ? 1.0 : 0.0;
+        double derY = 0.0;
+        bool dScaled = false;
+        int refIdx = 0;
+        double minR = double.MaxValue;
+        double minTrap = double.MaxValue;
+        Span<double> powRe = stackalloc double[17];
+        Span<double> powIm = stackalloc double[17];
+
+        outNx = 0f;
+        outNy = 0f;
+
+        for (int i = 0; i < maxIter; i++)
+        {
+            double Zx = refZx[refIdx];
+            double Zy = refZy[refIdx];
+            double zx = Zx + dzx;
+            double zy = Zy + dzy;
+            double r2 = zx * zx + zy * zy;
+
+            if (needsMinRadius && r2 < minR) minR = r2;
+            if (trackTrap && i > 0)
+            {
+                double td = MultibrotFormula.TrapDistance(zx, zy, orbitTrapMode);
+                if (td < minTrap) minTrap = td;
+            }
+
+            if (!double.IsFinite(r2) || r2 > Bailout2)
+            {
+                var esc = MultibrotFormula.Escaped(i, r2, exponent, needsMinRadius ? minR : 0);
+                outMu = esc.Mu;
+                outMinRadius = esc.MinRadius;
+                outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : MultibrotFormula.TrapDistance(zx, zy, orbitTrapMode)) : 0f;
+
+                if (computeNormals)
+                {
+                    if (r2 < 1e12)
+                    {
+                        MultibrotFormula.StepDerivativeInteger(zx, zy, exponent, addOne, ref derX, ref derY, ref dScaled, out double pzx, out double pzy);
+                        zx = pzx;
+                        zy = pzy;
+                    }
+
+                    MultibrotFormula.ComputeUnitNormal(zx, zy, derX, derY, out outNx, out outNy);
+                }
+
+                return;
+            }
+
+            if (!julia)
+            {
+                double dz2 = dzx * dzx + dzy * dzy;
+                if (r2 < dz2 || refIdx >= refLimit)
+                {
+                    dzx = zx;
+                    dzy = zy;
+                    refIdx = 0;
+                    Zx = 0.0;
+                    Zy = 0.0;
+                }
+            }
+            else if (refIdx >= refLimit)
+            {
+                ContinueDirectShaded(zx, zy, formula.JuliaRe, formula.JuliaIm, exponent, i, maxIter, minR, minTrap, derX, derY, dScaled, needsMinRadius, computeNormals, orbitTrapMode, out outMu, out outMinRadius, out outTrapDist, out outNx, out outNy);
+                return;
+            }
+
+            if (computeNormals)
+                MultibrotFormula.StepDerivativeInteger(zx, zy, exponent, addOne, ref derX, ref derY, ref dScaled, out _, out _);
+
+            if (exponent == 2)
+            {
+                double tx = 2.0 * Zx + dzx;
+                double ty = 2.0 * Zy + dzy;
+                double nx = dzx * tx - dzy * ty + addCx;
+                double ny = dzx * ty + dzy * tx + addCy;
+                dzx = nx;
+                dzy = ny;
+            }
+            else
+            {
+                PerturbStepDouble(Zx, Zy, ref dzx, ref dzy, exponent, powRe, powIm);
+                dzx += addCx;
+                dzy += addCy;
+            }
+
+            refIdx++;
+        }
+
+        outMu = -1f;
+        outMinRadius = needsMinRadius ? MultibrotFormula.Radius(minR) : 0f;
+        outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : 0.0) : 0f;
+    }
+
+    static void EvaluateShadedExtended(
+        ComplexExp dc,
+        ReferenceOrbit orbit,
+        in FormulaParams formula,
+        bool needsMinRadius,
+        bool computeNormals,
+        int orbitTrapMode,
+        out float outMu,
+        out float outMinRadius,
+        out float outTrapDist,
+        out float outNx,
+        out float outNy)
+    {
+        double[] refZx = orbit.Zx;
+        double[] refZy = orbit.Zy;
+        int refLimit = orbit.Length - 1;
+        int exponent = orbit.Exponent;
+        int maxIter = formula.MaxIterations;
+        bool julia = formula.Julia;
+        bool trackTrap = orbitTrapMode != 0;
+        bool addOne = !julia;
+
+        ComplexExp dz = julia ? dc : ComplexExp.Zero;
+        ComplexExp addC = julia ? ComplexExp.Zero : dc;
+
+        double derX = julia ? 1.0 : 0.0;
+        double derY = 0.0;
+        bool dScaled = false;
+        int refIdx = 0;
+        double minR = double.MaxValue;
+        double minTrap = double.MaxValue;
+        Span<double> powRe = stackalloc double[17];
+        Span<double> powIm = stackalloc double[17];
+
+        outNx = 0f;
+        outNy = 0f;
+
+        for (int i = 0; i < maxIter; i++)
+        {
+            double Zx = refZx[refIdx];
+            double Zy = refZy[refIdx];
+
+            ComplexExp fullZ = ComplexExp.AddDouble(dz, Zx, Zy);
+            fullZ.ToDouble(out double zx, out double zy);
+            double r2 = zx * zx + zy * zy;
+
+            if (needsMinRadius && r2 < minR) minR = r2;
+            if (trackTrap && i > 0)
+            {
+                double td = MultibrotFormula.TrapDistance(zx, zy, orbitTrapMode);
+                if (td < minTrap) minTrap = td;
+            }
+
+            if (!double.IsFinite(r2) || r2 > Bailout2)
+            {
+                var esc = MultibrotFormula.Escaped(i, r2, exponent, needsMinRadius ? minR : 0);
+                outMu = esc.Mu;
+                outMinRadius = esc.MinRadius;
+                outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : MultibrotFormula.TrapDistance(zx, zy, orbitTrapMode)) : 0f;
+
+                if (computeNormals)
+                {
+                    if (r2 < 1e12)
+                    {
+                        MultibrotFormula.StepDerivativeInteger(zx, zy, exponent, addOne, ref derX, ref derY, ref dScaled, out double pzx, out double pzy);
+                        zx = pzx;
+                        zy = pzy;
+                    }
+
+                    MultibrotFormula.ComputeUnitNormal(zx, zy, derX, derY, out outNx, out outNy);
+                }
+
+                return;
+            }
+
+            if (!julia)
+            {
+                FloatExp fullNorm2 = fullZ.NormSquared();
+                FloatExp dzNorm2 = dz.NormSquared();
+                if (fullNorm2 < dzNorm2 || refIdx >= refLimit)
+                {
+                    dz = fullZ;
+                    refIdx = 0;
+                    Zx = 0.0;
+                    Zy = 0.0;
+                }
+            }
+            else if (refIdx >= refLimit)
+            {
+                ContinueDirectShaded(zx, zy, formula.JuliaRe, formula.JuliaIm, exponent, i, maxIter, minR, minTrap, derX, derY, dScaled, needsMinRadius, computeNormals, orbitTrapMode, out outMu, out outMinRadius, out outTrapDist, out outNx, out outNy);
+                return;
+            }
+
+            if (computeNormals)
+                MultibrotFormula.StepDerivativeInteger(zx, zy, exponent, addOne, ref derX, ref derY, ref dScaled, out _, out _);
+
+            if (exponent == 2)
+            {
+                ComplexExp twoZPlusDz = ComplexExp.AddDouble(dz, 2.0 * Zx, 2.0 * Zy);
+                dz = ComplexExp.Add(ComplexExp.Mul(dz, twoZPlusDz), addC);
+            }
+            else
+            {
+                dz = ComplexExp.Add(PerturbStepExtended(Zx, Zy, dz, exponent, powRe, powIm), addC);
+            }
+
+            refIdx++;
+        }
+
+        outMu = -1f;
+        outMinRadius = needsMinRadius ? MultibrotFormula.Radius(minR) : 0f;
+        outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : 0.0) : 0f;
+    }
+
+    static void ContinueDirectShaded(
+        double zx,
+        double zy,
+        double cx,
+        double cy,
+        int exponent,
+        int startIteration,
+        int maxIter,
+        double minR,
+        double minTrap,
+        double derX,
+        double derY,
+        bool dScaled,
+        bool needsMinRadius,
+        bool computeNormals,
+        int orbitTrapMode,
+        out float outMu,
+        out float outMinRadius,
+        out float outTrapDist,
+        out float outNx,
+        out float outNy)
+    {
+        bool trackTrap = orbitTrapMode != 0;
+        outNx = 0f;
+        outNy = 0f;
+
+        for (int i = startIteration; i < maxIter; i++)
+        {
+            double r2 = zx * zx + zy * zy;
+            if (needsMinRadius && r2 < minR) minR = r2;
+            if (trackTrap && i > 0)
+            {
+                double td = MultibrotFormula.TrapDistance(zx, zy, orbitTrapMode);
+                if (td < minTrap) minTrap = td;
+            }
+
+            if (!double.IsFinite(r2) || r2 > Bailout2)
+            {
+                var esc = MultibrotFormula.Escaped(i, r2, exponent, needsMinRadius ? minR : 0);
+                outMu = esc.Mu;
+                outMinRadius = esc.MinRadius;
+                outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : MultibrotFormula.TrapDistance(zx, zy, orbitTrapMode)) : 0f;
+                if (computeNormals)
+                {
+                    if (r2 < 1e12)
+                    {
+                        MultibrotFormula.StepDerivativeInteger(zx, zy, exponent, false, ref derX, ref derY, ref dScaled, out double pzx, out double pzy);
+                        zx = pzx + cx;
+                        zy = pzy + cy;
+                    }
+
+                    MultibrotFormula.ComputeUnitNormal(zx, zy, derX, derY, out outNx, out outNy);
+                }
+
+                return;
+            }
+
+            MultibrotFormula.StepDerivativeInteger(zx, zy, exponent, false, ref derX, ref derY, ref dScaled, out double nextX, out double nextY);
+            zx = nextX + cx;
+            zy = nextY + cy;
+        }
+
+        outMu = -1f;
+        outMinRadius = needsMinRadius ? MultibrotFormula.Radius(minR) : 0f;
+        outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : 0.0) : 0f;
+    }
 }

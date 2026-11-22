@@ -333,6 +333,11 @@ public sealed class GpuFractalRenderer : IFractalBackend
         int palette = request.Coloring.Palette;
         int smooth = request.Coloring.Smooth ? 1 : 0;
         int interior = (int)request.Coloring.Interior;
+        int normalLighting = request.Coloring.NormalLighting ? 1 : 0;
+        int cursorLight = request.Coloring.CursorLight ? 1 : 0;
+        var lightPos = new Vector2(request.Coloring.LightX, request.Coloring.LightY);
+        float lightAngle = (float)(request.Coloring.LightAngle * (Math.PI / 180.0));
+        int orbitTrap = (int)request.Coloring.OrbitTrap;
         float density = (float)request.Coloring.Density;
         float phase = (float)request.Coloring.Phase;
         int julia = request.Formula.Julia ? 1 : 0;
@@ -347,6 +352,11 @@ public sealed class GpuFractalRenderer : IFractalBackend
         program.Set(program.PaletteLoc, palette, ShaderUniformDataType.SHADER_UNIFORM_INT);
         program.Set(program.SmoothLoc, smooth, ShaderUniformDataType.SHADER_UNIFORM_INT);
         program.Set(program.InteriorLoc, interior, ShaderUniformDataType.SHADER_UNIFORM_INT);
+        program.Set(program.NormalLightingLoc, normalLighting, ShaderUniformDataType.SHADER_UNIFORM_INT);
+        program.Set(program.CursorLightLoc, cursorLight, ShaderUniformDataType.SHADER_UNIFORM_INT);
+        program.Set(program.LightPosLoc, lightPos, ShaderUniformDataType.SHADER_UNIFORM_VEC2);
+        program.Set(program.LightAngleLoc, lightAngle, ShaderUniformDataType.SHADER_UNIFORM_FLOAT);
+        program.Set(program.OrbitTrapLoc, orbitTrap, ShaderUniformDataType.SHADER_UNIFORM_INT);
         program.Set(program.DensityLoc, density, ShaderUniformDataType.SHADER_UNIFORM_FLOAT);
         program.Set(program.PhaseLoc, phase, ShaderUniformDataType.SHADER_UNIFORM_FLOAT);
         program.Set(program.JuliaLoc, julia, ShaderUniformDataType.SHADER_UNIFORM_INT);
@@ -372,6 +382,11 @@ public sealed class GpuFractalRenderer : IFractalBackend
         int palette = request.Coloring.Palette;
         int smooth = request.Coloring.Smooth ? 1 : 0;
         int interior = (int)request.Coloring.Interior;
+        int normalLighting = request.Coloring.NormalLighting ? 1 : 0;
+        int cursorLight = request.Coloring.CursorLight ? 1 : 0;
+        var lightPos = new Vector2(request.Coloring.LightX, request.Coloring.LightY);
+        float lightAngle = (float)(request.Coloring.LightAngle * (Math.PI / 180.0));
+        int orbitTrap = (int)request.Coloring.OrbitTrap;
         float density = (float)request.Coloring.Density;
         float phase = (float)request.Coloring.Phase;
         int julia = request.Formula.Julia ? 1 : 0;
@@ -388,6 +403,11 @@ public sealed class GpuFractalRenderer : IFractalBackend
         _perturb.Set(_perturb.PaletteLoc, palette, ShaderUniformDataType.SHADER_UNIFORM_INT);
         _perturb.Set(_perturb.SmoothLoc, smooth, ShaderUniformDataType.SHADER_UNIFORM_INT);
         _perturb.Set(_perturb.InteriorLoc, interior, ShaderUniformDataType.SHADER_UNIFORM_INT);
+        _perturb.Set(_perturb.NormalLightingLoc, normalLighting, ShaderUniformDataType.SHADER_UNIFORM_INT);
+        _perturb.Set(_perturb.CursorLightLoc, cursorLight, ShaderUniformDataType.SHADER_UNIFORM_INT);
+        _perturb.Set(_perturb.LightPosLoc, lightPos, ShaderUniformDataType.SHADER_UNIFORM_VEC2);
+        _perturb.Set(_perturb.LightAngleLoc, lightAngle, ShaderUniformDataType.SHADER_UNIFORM_FLOAT);
+        _perturb.Set(_perturb.OrbitTrapLoc, orbitTrap, ShaderUniformDataType.SHADER_UNIFORM_INT);
         _perturb.Set(_perturb.DensityLoc, density, ShaderUniformDataType.SHADER_UNIFORM_FLOAT);
         _perturb.Set(_perturb.PhaseLoc, phase, ShaderUniformDataType.SHADER_UNIFORM_FLOAT);
         _perturb.Set(_perturb.JuliaLoc, julia, ShaderUniformDataType.SHADER_UNIFORM_INT);
@@ -422,6 +442,11 @@ public sealed class GpuFractalRenderer : IFractalBackend
         public int PaletteLutLoc;
         public int SmoothLoc;
         public int InteriorLoc;
+        public int NormalLightingLoc;
+        public int CursorLightLoc;
+        public int LightPosLoc;
+        public int LightAngleLoc;
+        public int OrbitTrapLoc;
         public int DensityLoc;
         public int PhaseLoc;
         public int JuliaLoc;
@@ -451,6 +476,11 @@ public sealed class GpuFractalRenderer : IFractalBackend
                 PaletteLutLoc = Raylib.GetShaderLocation(shader, "paletteLut"),
                 SmoothLoc = Raylib.GetShaderLocation(shader, "smoothColor"),
                 InteriorLoc = Raylib.GetShaderLocation(shader, "interiorStyle"),
+                NormalLightingLoc = Raylib.GetShaderLocation(shader, "normalLighting"),
+                CursorLightLoc = Raylib.GetShaderLocation(shader, "cursorLight"),
+                LightPosLoc = Raylib.GetShaderLocation(shader, "lightPos"),
+                LightAngleLoc = Raylib.GetShaderLocation(shader, "lightAngle"),
+                OrbitTrapLoc = Raylib.GetShaderLocation(shader, "orbitTrap"),
                 DensityLoc = Raylib.GetShaderLocation(shader, "density"),
                 PhaseLoc = Raylib.GetShaderLocation(shader, "phase"),
                 JuliaLoc = Raylib.GetShaderLocation(shader, "juliaSet"),
@@ -490,6 +520,11 @@ public sealed class GpuFractalRenderer : IFractalBackend
         public int RefOrbitLoc;
         public int SmoothLoc;
         public int InteriorLoc;
+        public int NormalLightingLoc;
+        public int CursorLightLoc;
+        public int LightPosLoc;
+        public int LightAngleLoc;
+        public int OrbitTrapLoc;
         public int DensityLoc;
         public int PhaseLoc;
         public int JuliaLoc;
@@ -522,6 +557,11 @@ public sealed class GpuFractalRenderer : IFractalBackend
                 RefOrbitLoc = Raylib.GetShaderLocation(shader, "refOrbit"),
                 SmoothLoc = Raylib.GetShaderLocation(shader, "smoothColor"),
                 InteriorLoc = Raylib.GetShaderLocation(shader, "interiorStyle"),
+                NormalLightingLoc = Raylib.GetShaderLocation(shader, "normalLighting"),
+                CursorLightLoc = Raylib.GetShaderLocation(shader, "cursorLight"),
+                LightPosLoc = Raylib.GetShaderLocation(shader, "lightPos"),
+                LightAngleLoc = Raylib.GetShaderLocation(shader, "lightAngle"),
+                OrbitTrapLoc = Raylib.GetShaderLocation(shader, "orbitTrap"),
                 DensityLoc = Raylib.GetShaderLocation(shader, "density"),
                 PhaseLoc = Raylib.GetShaderLocation(shader, "phase"),
                 JuliaLoc = Raylib.GetShaderLocation(shader, "juliaSet"),

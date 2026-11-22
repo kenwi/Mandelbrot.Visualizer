@@ -13,6 +13,11 @@ uniform int maxIter;
 uniform int paletteId;
 uniform int smoothColor;
 uniform int interiorStyle;
+uniform int normalLighting;
+uniform int cursorLight;
+uniform vec2 lightPos;
+uniform float lightAngle;
+uniform int orbitTrap;
 uniform float density;
 uniform float phase;
 uniform int juliaSet;
@@ -174,15 +179,159 @@ vec3 interiorColor(float minR)
     return vec3(8.0 + 40.0 * g, 12.0 + 28.0 * g, 32.0 + 90.0 * g) / 255.0;
 }
 
-vec3 colorOf(bool escaped, float mu, float minR)
+float trapDistance(float zx, float zy)
 {
-    if (!escaped) return interiorColor(minR);
+    if (orbitTrap == 1) return length(vec2(zx, zy));
+    if (orbitTrap == 2) return min(abs(zx), abs(zy)) + max(0.0, length(vec2(zx, zy)) - 2.0);
+    if (orbitTrap == 3) return abs(length(vec2(zx, zy)) - 1.0);
+    if (orbitTrap == 4) return abs(max(abs(zx), abs(zy)) - 1.0);
+    return 0.0;
+}
 
-    float value = smoothColor == 1 ? mu : floor(mu);
-    float t = value * 0.035 * max(density, 0.05) + phase;
-    vec3 color = samplePalette(paletteId, t);
-    float shade = clamp(tanh(mu / 9.0), 0.0, 1.0);
-    return color * shade;
+vec3 sampleOrbitTrap(float dist)
+{
+    float d = max(dist, 0.0);
+    float t = log(1.0 + d * 6.0) * 0.55 * max(density, 0.05) + phase;
+    vec3 baseCol = samplePalette(paletteId, t);
+    float filament = exp(-d * 3.2);
+    float falloff = 1.0 / (1.0 + d * 1.4);
+    float shade = 0.35 + 0.65 * falloff;
+    return mix(baseCol * shade, baseCol * 1.15 + vec3(0.18), filament * 0.65);
+}
+
+vec3 applyNormalLighting(vec3 col, vec2 u, vec2 pixPos)
+{
+    vec3 N = normalize(vec3(u.x, u.y, 1.0 / 1.75));
+    vec3 L;
+    float atten = 1.0;
+    if (cursorLight == 1)
+    {
+        vec3 toLight = vec3(lightPos - pixPos, 0.52);
+        float dist = length(toLight);
+        L = toLight / max(dist, 1e-5);
+        atten = 1.0 / (1.0 + 0.55 * dist * dist);
+    }
+    else
+    {
+        L = vec3(cos(lightAngle) * 0.7342162, sin(lightAngle) * 0.7342162, 0.6789146);
+    }
+
+    vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
+    float diff = max(dot(N, L), 0.0);
+    float spec = pow(max(dot(N, H), 0.0), 24.0);
+    if (cursorLight == 1)
+        return clamp(col * (0.22 + 0.98 * diff * atten) + vec3(0.42 * spec * atten), 0.0, 1.0);
+    return clamp(col * (0.24 + 0.92 * diff) + vec3(0.38 * spec), 0.0, 1.0);
+}
+
+vec2 computeUnitNormal(float zx, float zy, vec2 d)
+{
+    vec2 u = vec2(zx * d.x + zy * d.y, zy * d.x - zx * d.y);
+    float len = length(u);
+    return len > 1e-18 ? u / len : vec2(0.0);
+}
+
+void renormDeriv(inout vec2 d, inout bool dScaled)
+{
+    float d2 = dot(d, d);
+    if (d2 > 1e20 || (dScaled && d2 > 0.0 && d2 < 1e-20))
+    {
+        d *= inversesqrt(d2);
+        dScaled = true;
+    }
+}
+
+void complexPowF32(float zx, float zy, int n, out float ox, out float oy)
+{
+    int e = n < 0 ? -n : n;
+    if (e == 0)
+    {
+        ox = 1.0;
+        oy = 0.0;
+        return;
+    }
+
+    float rx = 1.0;
+    float ry = 0.0;
+    float bx = zx;
+    float by = zy;
+    for (int k = 0; k < 6; k++)
+    {
+        if ((e & 1) == 1)
+        {
+            float nx = rx * bx - ry * by;
+            float ny = rx * by + ry * bx;
+            rx = nx;
+            ry = ny;
+        }
+
+        e >>= 1;
+        if (e == 0) break;
+        float sx = bx * bx - by * by;
+        float sy = 2.0 * bx * by;
+        bx = sx;
+        by = sy;
+    }
+
+    ox = rx;
+    oy = ry;
+    if (n >= 0) return;
+
+    float mag = ox * ox + oy * oy;
+    if (mag == 0.0)
+    {
+        ox = 0.0;
+        oy = 0.0;
+        return;
+    }
+
+    ox = ox / mag;
+    oy = -oy / mag;
+}
+
+void stepDerivInteger(float zx, float zy, int n, bool addOne, inout vec2 d, inout bool dScaled)
+{
+    if (n == 2)
+    {
+        d = vec2(2.0 * (zx * d.x - zy * d.y), 2.0 * (zx * d.y + zy * d.x));
+        if (addOne && !dScaled) d.x += 1.0;
+        renormDeriv(d, dScaled);
+        return;
+    }
+
+    float pmx, pmy;
+    complexPowF32(zx, zy, n - 1, pmx, pmy);
+    d = float(n) * vec2(pmx * d.x - pmy * d.y, pmx * d.y + pmy * d.x);
+    if (addOne && !dScaled) d.x += 1.0;
+    renormDeriv(d, dScaled);
+}
+
+vec3 colorOf(bool escaped, float mu, float minR, float trapDist, vec2 normal2D, vec2 pixPos)
+{
+    if (!escaped)
+    {
+        if (orbitTrap != 0 && interiorStyle == 1)
+            return sampleOrbitTrap(trapDist) * 0.85;
+        return interiorColor(minR);
+    }
+
+    vec3 color;
+    if (orbitTrap != 0)
+    {
+        color = sampleOrbitTrap(trapDist);
+    }
+    else
+    {
+        float value = smoothColor == 1 ? mu : floor(mu);
+        float t = value * 0.035 * max(density, 0.05) + phase;
+        color = samplePalette(paletteId, t);
+        float shade = clamp(tanh(mu / 9.0), 0.0, 1.0);
+        color *= shade;
+    }
+
+    if (normalLighting == 1)
+        color = applyNormalLighting(color, normal2D, pixPos);
+    return color;
 }
 
 void main()
@@ -218,6 +367,11 @@ void main()
     bool escaped = false;
     float mu = -1.0;
     float minR = 1e20;
+    float minTrap = 1e20;
+    vec2 d = juliaSet == 1 ? vec2(1.0, 0.0) : vec2(0.0, 0.0);
+    bool dScaled = false;
+    bool addOne = juliaSet == 0;
+    vec2 normal2D = vec2(0.0);
 
     if (abs(power) < 1e-4)
     {
@@ -249,9 +403,30 @@ void main()
         for (int i = 0; i < steps; i++)
         {
             float r2 = zx.x * zx.x + zy.x * zy.x;
+            if (orbitTrap != 0 && i > 0) minTrap = min(minTrap, trapDistance(zx.x, zy.x));
             if (escapedAt(r2, i, minR, mu))
             {
                 escaped = true;
+                if (normalLighting == 1)
+                {
+                    float fx = zx.x, fy = zy.x;
+                    if (r2 < 1e12 && r2 > 0.0)
+                    {
+                        float r = sqrt(r2);
+                        float th = atan(fy, fx);
+                        float rp = power * pow(r, power - 1.0);
+                        float ap = (power - 1.0) * th;
+                        vec2 dp = vec2(rp * cos(ap), rp * sin(ap));
+                        d = vec2(dp.x * d.x - dp.y * d.y, dp.x * d.y + dp.y * d.x);
+                        if (addOne && !dScaled) d.x += 1.0;
+                        renormDeriv(d, dScaled);
+                        float raised = pow(r, power);
+                        float ang = power * th;
+                        fx = raised * cos(ang) + cx.x;
+                        fy = raised * sin(ang) + cy.x;
+                    }
+                    normal2D = computeUnitNormal(fx, fy, d);
+                }
                 break;
             }
 
@@ -259,6 +434,8 @@ void main()
             {
                 if (power > 0.0)
                 {
+                    if (normalLighting == 1)
+                        d = vec2(addOne && !dScaled ? 1.0 : 0.0, 0.0);
                     zx = cx;
                     zy = cy;
                     continue;
@@ -271,6 +448,16 @@ void main()
 
             float radius = sqrt(r2);
             float theta = atan(zy.x, zx.x);
+            if (normalLighting == 1)
+            {
+                float rp = power * pow(radius, power - 1.0);
+                float ap = (power - 1.0) * theta;
+                vec2 dp = vec2(rp * cos(ap), rp * sin(ap));
+                d = vec2(dp.x * d.x - dp.y * d.y, dp.x * d.y + dp.y * d.x);
+                if (addOne && !dScaled) d.x += 1.0;
+                renormDeriv(d, dScaled);
+            }
+
             float raised = pow(radius, power);
             float ang = power * theta;
             zx = dfAdd(cx, vec2(raised * cos(ang), 0.0));
@@ -288,11 +475,28 @@ void main()
         for (int i = 0; i < steps; i++)
         {
             float r2 = zx.x * zx.x + zy.x * zy.x;
+            if (orbitTrap != 0 && i > 0) minTrap = min(minTrap, trapDistance(zx.x, zy.x));
             if (escapedAt(r2, i, minR, mu))
             {
                 escaped = true;
+                if (normalLighting == 1)
+                {
+                    float fx = zx.x, fy = zy.x;
+                    if (r2 < 1e12)
+                    {
+                        stepDerivInteger(fx, fy, exponent, addOne, d, dScaled);
+                        float pzx, pzy;
+                        complexPowF32(fx, fy, exponent, pzx, pzy);
+                        fx = pzx + cx.x;
+                        fy = pzy + cy.x;
+                    }
+                    normal2D = computeUnitNormal(fx, fy, d);
+                }
                 break;
             }
+
+            if (normalLighting == 1)
+                stepDerivInteger(zx.x, zy.x, exponent, addOne, d, dScaled);
 
             vec2 nx;
             vec2 ny;
@@ -308,5 +512,8 @@ void main()
         }
     }
 
-    finalColor = vec4(colorOf(escaped, mu, minR), 1.0);
+    float aspect = resolution.x / max(resolution.y, 1.0);
+    vec2 pixPos = vec2((px / resolution.x - 0.5) * aspect, -(py / resolution.y - 0.5));
+    float finalTrap = orbitTrap != 0 ? (minTrap < 1e15 ? minTrap : trapDistance(zx.x, zy.x)) : 0.0;
+    finalColor = vec4(colorOf(escaped, mu, minR, finalTrap, normal2D, pixPos), 1.0);
 }

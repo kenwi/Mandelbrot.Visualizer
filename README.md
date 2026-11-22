@@ -11,6 +11,7 @@ An interactive viewer for the Mandelbrot set and its relatives. Every pixel asks
 - Choose `1` to `100,000` iterations (logarithmic slider, text box, or `-`/`+`), or toggle **Auto iterations** to scale the limit with zoom depth.
 - Inspect the point under the cursor live in the side panel: complex coordinate (`Cursor`), escape iteration / smooth value or interior magnitude (`Value`), and final complex value (`Final z`), including at deep zoom.
 - Color by how fast a point escapes: cyclic bands or a histogram, with optional smoothing, density, and phase.
+- Optional **3D lighting** (directional normal-map shading with a 360-degree angle slider, or **Mouse light** mode using the cursor as a live floating point light) and optional **Orbit traps** (`Point`, `Cross`, `Circle`, `Square`), working across both GPU shaders (including deep-zoom perturbation) and CPU.
 - Eight palettes shared directly between CPU and GPU via a baked LUT: Classic, Fire, Electric, Ocean, Sunset, Ice, Grayscale, Rainbow.
 - Paint the interior solid or with a glow based on the smallest size the orbit reached.
 - Switch to a Julia set and type the constant `c`.
@@ -134,6 +135,13 @@ Supported CLI options:
 - `--power n` - starting exponent `n`
 - `--iter count` - starting max iterations (`1` to `100000`)
 - `--cpu` - start with the CPU renderer instead of GPU shaders
+- `--fullscreen` - launch directly in fullscreen mode
+- `--lighting` / `--3d` - enable 3D normal-map lighting
+- `--angle deg` - set 3D light azimuth angle in degrees (`0` to `360`, implies `--lighting`)
+- `--mouse-light` - use the mouse pointer as a floating 3D point light (implies `--lighting`)
+- `--light x,y` - fix the point light at normalized canvas coordinates (implies `--mouse-light`)
+- `--trap mode` - enable an orbit trap (`none`, `point`, `cross`, `circle`, `square`)
+- `--interior style` - set interior style (`black`, `glow`)
 - `--screenshot path.png` - render a final-quality frame, save it (plus a `.window.png` capture), and exit
 
 Pictures saved interactively from the app go to `captures/`.
@@ -148,6 +156,9 @@ Pictures saved interactively from the app go to `captures/`.
 | Iterations | Logarithmic slider (`1` to `100,000`), text box, or `-` and `+` |
 | Auto iterations | Checkbox. Scales iteration limit automatically with zoom depth |
 | Palette | Combo box, or `C` to cycle |
+| Orbit trap | Combo box (`None`, `Point`, `Cross`, `Circle`, `Square`), or `T` to cycle |
+| 3D lighting | Checkbox or `L`, with a 360-degree `Angle` slider |
+| Mouse light | Checkbox or `M`. Uses the mouse cursor as a floating 3D point light |
 | Julia set | Checkbox or `J`. `Re c` and `Im c` edit the constant |
 | GPU shader | Checkbox or `G`. Histogram coloring stays on the CPU |
 | SIMD | Checkbox or `V`. Speeds positive whole-number powers on the CPU with AVX2 / AVX-512. Fractional powers stay on the scalar path |

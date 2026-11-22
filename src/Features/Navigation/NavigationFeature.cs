@@ -151,6 +151,21 @@ public sealed class NavigationFeature
         return true;
     }
 
+    public bool TryGetLastCursorNormalized(int canvasWidth, int canvasHeight, out float x, out float y)
+    {
+        if (!_hasCursor || canvasWidth < 1 || canvasHeight < 1)
+        {
+            x = 0f;
+            y = 0f;
+            return false;
+        }
+
+        float aspect = canvasWidth / (float)canvasHeight;
+        x = (_lastCursor.X / canvasWidth - 0.5f) * aspect;
+        y = -(_lastCursor.Y / canvasHeight - 0.5f);
+        return true;
+    }
+
     public bool TryGetHoveredPixel(int canvasWidth, int canvasHeight, out int pixelX, out int pixelY)
     {
         Vector2 mouse = Raylib.GetMousePosition();

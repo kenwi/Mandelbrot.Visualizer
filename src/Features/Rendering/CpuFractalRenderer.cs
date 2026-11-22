@@ -21,6 +21,8 @@ public sealed class CpuFractalRenderer : IFractalBackend
         FormulaParams Formula,
         bool UseSimd,
         bool NeedsMinRadius,
+        bool NeedsNormals,
+        OrbitTrapMode OrbitTrap,
         ReferenceOrbit? ReferenceOrbit);
 
     readonly object _gate = new();
@@ -38,6 +40,9 @@ public sealed class CpuFractalRenderer : IFractalBackend
 
     float[]? _mu;
     float[]? _minRadius;
+    float[]? _trapDist;
+    float[]? _normalX;
+    float[]? _normalY;
     OrbitKey? _cachedOrbitKey;
 
     Texture _texture;
@@ -111,14 +116,19 @@ public sealed class CpuFractalRenderer : IFractalBackend
         int height = request.Height;
         int count = width * height;
         bool needsMinRadius = request.Coloring.Interior == InteriorStyle.Glow;
+        bool needsNormals = request.Coloring.NormalLighting;
+        OrbitTrapMode orbitTrap = request.Coloring.OrbitTrap;
+        bool useShaded = needsNormals || orbitTrap != OrbitTrapMode.None;
 
         var orbitKey = new OrbitKey(
             width,
             height,
             request.View,
             request.Formula,
-            request.UseSimd && SimdMultibrot.IsSupported,
+            !useShaded && request.UseSimd && SimdMultibrot.IsSupported,
             needsMinRadius,
+            needsNormals,
+            orbitTrap,
             orbit);
 
         if (_mu == null || _mu.Length < count)
@@ -128,12 +138,20 @@ public sealed class CpuFractalRenderer : IFractalBackend
             _cachedOrbitKey = null;
         }
 
+        if (useShaded && (_trapDist == null || _trapDist.Length < count))
+        {
+            _trapDist = new float[count];
+            _normalX = new float[count];
+            _normalY = new float[count];
+            _cachedOrbitKey = null;
+        }
+
         float[] mu = _mu;
         float[] minRadius = _minRadius!;
 
         if (_cachedOrbitKey != orbitKey)
         {
-            if (!EvaluateOrbits(request, orbit, generation, needsMinRadius, mu, minRadius))
+            if (!EvaluateOrbits(request, orbit, generation, needsMinRadius, needsNormals, orbitTrap, mu, minRadius, _trapDist, _normalX, _normalY))
             {
                 _cachedOrbitKey = null;
                 return null;
@@ -153,22 +171,44 @@ public sealed class CpuFractalRenderer : IFractalBackend
             ? recycled
             : new Color[count];
 
+        ReadOnlySpan<float> trapSpan = orbitTrap != OrbitTrapMode.None && _trapDist != null ? _trapDist.AsSpan(0, count) : ReadOnlySpan<float>.Empty;
+        ReadOnlySpan<float> nxSpan = needsNormals && _normalX != null ? _normalX.AsSpan(0, count) : ReadOnlySpan<float>.Empty;
+        ReadOnlySpan<float> nySpan = needsNormals && _normalY != null ? _normalY.AsSpan(0, count) : ReadOnlySpan<float>.Empty;
+
         Palette.Map(
             mu.AsSpan(0, count),
             minRadius.AsSpan(0, count),
+            trapSpan,
+            nxSpan,
+            nySpan,
             pixels.AsSpan(0, count),
             request.Coloring,
-            request.Formula.MaxIterations);
+            request.Formula.MaxIterations,
+            width,
+            height);
 
         return pixels;
     }
 
-    bool EvaluateOrbits(RenderRequest request, ReferenceOrbit? orbit, int generation, bool needsMinRadius, float[] mu, float[] minRadius)
+    bool EvaluateOrbits(
+        RenderRequest request,
+        ReferenceOrbit? orbit,
+        int generation,
+        bool needsMinRadius,
+        bool needsNormals,
+        OrbitTrapMode orbitTrap,
+        float[] mu,
+        float[] minRadius,
+        float[]? trapDist,
+        float[]? normalX,
+        float[]? normalY)
     {
         int width = request.Width;
         int height = request.Height;
         FormulaParams formula = request.Formula;
         bool usePerturbation = orbit != null && request.View.IsDeepZoom;
+        bool useShaded = needsNormals || orbitTrap != OrbitTrapMode.None;
+        int trapMode = (int)orbitTrap;
 
         FloatExp refOffsetX = FloatExp.Zero;
         FloatExp refOffsetY = FloatExp.Zero;
@@ -185,7 +225,7 @@ public sealed class CpuFractalRenderer : IFractalBackend
         double halfW = request.View.HalfWidth(width, height);
         double originX = request.View.CenterX;
         double originY = request.View.CenterY;
-        bool useSimd = request.UseSimd && SimdMultibrot.IsSupported;
+        bool useSimd = !useShaded && request.UseSimd && SimdMultibrot.IsSupported;
 
         bool mirrorY = !usePerturbation
             && !formula.Julia
@@ -215,7 +255,14 @@ public sealed class CpuFractalRenderer : IFractalBackend
                 int end = Math.Min(start + chunk, rowLimit);
                 for (int y = start; y < end; y++)
                 {
-                    if (usePerturbation)
+                    if (useShaded)
+                    {
+                        if (usePerturbation)
+                            PerturbationFormula.EvaluateShadedRow(width, height, y, refOffsetX, refOffsetY, halfWExact, halfHExact, orbit!, formula, mu, minRadius, trapDist!, normalX!, normalY!, needsMinRadius, needsNormals, trapMode);
+                        else
+                            MultibrotFormula.EvaluateShadedRow(width, height, y, originX, originY, halfW, halfH, formula, mu, minRadius, trapDist!, normalX!, normalY!, needsMinRadius, needsNormals, trapMode);
+                    }
+                    else if (usePerturbation)
                     {
                         PerturbationFormula.EvaluateRow(width, height, y, refOffsetX, refOffsetY, halfWExact, halfHExact, orbit!, formula, mu, minRadius, needsMinRadius);
                     }
@@ -233,8 +280,17 @@ public sealed class CpuFractalRenderer : IFractalBackend
                         int mirror = height - 1 - y;
                         if (mirror != y)
                         {
-                            Array.Copy(mu, y * width, mu, mirror * width, width);
-                            Array.Copy(minRadius, y * width, minRadius, mirror * width, width);
+                            int srcOff = y * width;
+                            int dstOff = mirror * width;
+                            Array.Copy(mu, srcOff, mu, dstOff, width);
+                            Array.Copy(minRadius, srcOff, minRadius, dstOff, width);
+                            if (useShaded)
+                            {
+                                Array.Copy(trapDist!, srcOff, trapDist!, dstOff, width);
+                                Array.Copy(normalX!, srcOff, normalX!, dstOff, width);
+                                for (int x = 0; x < width; x++)
+                                    normalY![dstOff + x] = -normalY[srcOff + x];
+                            }
                         }
                     }
                 }

@@ -57,11 +57,32 @@ public struct PanelLayout(float x, float y, float width)
         return selected != before;
     }
 
+    public bool LabeledCombo(string label, string items, ref int selected, float labelWidth = 90)
+    {
+        int before = selected;
+        RayGui.GuiLabel(new Rectangle { x = X, y = Y, width = labelWidth, height = 28 }, label);
+        RayGui.GuiComboBox(new Rectangle { x = X + labelWidth, y = Y, width = Width - labelWidth, height = 28 }, items, ref selected);
+        Y += 34;
+        return selected != before;
+    }
+
     public bool Slider(double current, double min, double max, Action<double> apply)
     {
         float value = (float)Math.Clamp(current, min, max);
         float before = value;
         RayGui.GuiSliderBar(Row(22), "", "", ref value, (float)min, (float)max);
+        if (Math.Abs(value - before) <= 0.0001f) return false;
+        apply(value);
+        return true;
+    }
+
+    public bool LabeledSlider(string label, double current, double min, double max, Action<double> apply, float labelWidth = 114)
+    {
+        float value = (float)Math.Clamp(current, min, max);
+        float before = value;
+        RayGui.GuiLabel(new Rectangle { x = X, y = Y, width = labelWidth, height = 22 }, label);
+        RayGui.GuiSliderBar(new Rectangle { x = X + labelWidth, y = Y, width = Width - labelWidth, height = 22 }, "", "", ref value, (float)min, (float)max);
+        Y += 28;
         if (Math.Abs(value - before) <= 0.0001f) return false;
         apply(value);
         return true;

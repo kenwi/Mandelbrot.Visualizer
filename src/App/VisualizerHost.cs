@@ -16,7 +16,15 @@ public sealed record LaunchOptions(
     FloatExp? Scale = null,
     double? Power = null,
     int? MaxIterations = null,
-    bool ForceCpu = false);
+    bool ForceCpu = false,
+    bool NormalLighting = false,
+    OrbitTrapMode OrbitTrap = OrbitTrapMode.None,
+    InteriorStyle? Interior = null,
+    bool CursorLight = false,
+    float? LightX = null,
+    float? LightY = null,
+    double? LightAngle = null,
+    bool Fullscreen = false);
 
 /// <summary>
 /// Thin application shell owning the Raylib window lifecycle and frame loop,
@@ -31,14 +39,36 @@ public sealed class VisualizerHost : IDisposable
     readonly CaptureFeature _capture;
     readonly DiagnosticsFeature _diagnostics = new();
     readonly SidePanel _panel = new();
+    readonly bool _fixedLight;
+    readonly bool _startFullscreen;
 
     bool _quit;
 
     public VisualizerHost(LaunchOptions options)
     {
+        _fixedLight = options.LightX.HasValue || options.LightY.HasValue;
+        _startFullscreen = options.Fullscreen;
         _capture = new CaptureFeature(options.ScreenshotPath);
         if (options.ForceCpu)
             _rendering.SetUseGpu(false);
+
+        if (options.NormalLighting || options.CursorLight || options.LightAngle.HasValue || options.OrbitTrap != OrbitTrapMode.None || options.Interior.HasValue)
+        {
+            ColoringParams current = _coloring.State;
+            double angle = options.LightAngle.HasValue
+                ? ((options.LightAngle.Value % 360.0) + 360.0) % 360.0
+                : current.LightAngle;
+            _coloring.SetColoring(current with
+            {
+                NormalLighting = options.NormalLighting || options.CursorLight || options.LightAngle.HasValue,
+                CursorLight = options.CursorLight,
+                LightX = options.LightX ?? current.LightX,
+                LightY = options.LightY ?? current.LightY,
+                LightAngle = angle,
+                OrbitTrap = options.OrbitTrap,
+                Interior = options.Interior ?? current.Interior,
+            });
+        }
 
         if (options.Power.HasValue || options.MaxIterations.HasValue)
         {
@@ -62,8 +92,13 @@ public sealed class VisualizerHost : IDisposable
 
     public void Run()
     {
-        Raylib.SetConfigFlags(ConfigFlags.FLAG_WINDOW_RESIZABLE | ConfigFlags.FLAG_VSYNC_HINT);
+        ConfigFlags flags = ConfigFlags.FLAG_WINDOW_RESIZABLE | ConfigFlags.FLAG_VSYNC_HINT;
+        if (_startFullscreen)
+            flags |= ConfigFlags.FLAG_FULLSCREEN_MODE;
+        Raylib.SetConfigFlags(flags);
         Raylib.InitWindow(0, 0, "Multibrot");
+        if (_startFullscreen && !Raylib.IsWindowFullscreen())
+            Raylib.ToggleFullscreen();
         Raylib.SetWindowMinSize(1100, 760);
         Raylib.SetTargetFPS(60);
         Raylib.SetExitKey(KeyboardKey.KEY_NULL);
@@ -82,6 +117,11 @@ public sealed class VisualizerHost : IDisposable
 
             bool dirty = HandleInput(canvasWidth, canvasHeight);
             dirty |= _formula.SyncAutoIterations(_navigation.State.ScaleExact);
+            if (!_fixedLight)
+            {
+                bool hasCursorPos = _navigation.TryGetLastCursorNormalized(canvasWidth, canvasHeight, out float lightX, out float lightY);
+                dirty |= _coloring.SyncCursorLight(hasCursorPos, lightX, lightY);
+            }
             bool finalQuality = _capture.ForceFinalQuality || !_navigation.IsInteracting;
 
             _rendering.PrepareFrame(_coloring.State.Mode);

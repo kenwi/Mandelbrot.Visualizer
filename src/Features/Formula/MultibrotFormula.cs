@@ -454,4 +454,333 @@ public static class MultibrotFormula
         if (radiusSquared == double.MaxValue || radiusSquared < 0) return 0f;
         return (float)Math.Sqrt(radiusSquared);
     }
+
+    internal static double TrapDistance(double zx, double zy, int trapMode) => trapMode switch
+    {
+        1 => Math.Sqrt(zx * zx + zy * zy),
+        2 => Math.Min(Math.Abs(zx), Math.Abs(zy)) + Math.Max(0.0, Math.Sqrt(zx * zx + zy * zy) - 2.0),
+        3 => Math.Abs(Math.Sqrt(zx * zx + zy * zy) - 1.0),
+        4 => Math.Abs(Math.Max(Math.Abs(zx), Math.Abs(zy)) - 1.0),
+        _ => 0.0,
+    };
+
+    internal static void ComputeUnitNormal(double zx, double zy, double dx, double dy, out float nx, out float ny)
+    {
+        double ux = zx * dx + zy * dy;
+        double uy = zy * dx - zx * dy;
+        double len = Math.Sqrt(ux * ux + uy * uy);
+        if (double.IsFinite(len) && len > 1e-18)
+        {
+            nx = (float)(ux / len);
+            ny = (float)(uy / len);
+        }
+        else
+        {
+            nx = 0f;
+            ny = 0f;
+        }
+    }
+
+    internal static void StepDerivativeInteger(
+        double zx,
+        double zy,
+        int n,
+        bool addOne,
+        ref double dx,
+        ref double dy,
+        ref bool dScaled,
+        out double powZx,
+        out double powZy)
+    {
+        if (n == 2)
+        {
+            double ndx = 2.0 * (zx * dx - zy * dy);
+            double ndy = 2.0 * (zx * dy + zy * dx);
+            if (addOne && !dScaled) ndx += 1.0;
+            dx = ndx;
+            dy = ndy;
+            RenormalizeDerivative(ref dx, ref dy, ref dScaled);
+            powZx = zx * zx - zy * zy;
+            powZy = 2.0 * zx * zy;
+            return;
+        }
+
+        double pmx = zx;
+        double pmy = zy;
+        if (!PowInteger(ref pmx, ref pmy, n - 1))
+        {
+            dx = double.NaN;
+            dy = double.NaN;
+            powZx = double.NaN;
+            powZy = double.NaN;
+            return;
+        }
+
+        double dnx = n * (pmx * dx - pmy * dy);
+        double dny = n * (pmx * dy + pmy * dx);
+        if (addOne && !dScaled) dnx += 1.0;
+        dx = dnx;
+        dy = dny;
+        RenormalizeDerivative(ref dx, ref dy, ref dScaled);
+
+        powZx = pmx * zx - pmy * zy;
+        powZy = pmx * zy + pmy * zx;
+    }
+
+    internal static void RenormalizeDerivative(ref double dx, ref double dy, ref bool dScaled)
+    {
+        double d2 = dx * dx + dy * dy;
+        if (d2 > 1e20 || (dScaled && d2 > 0.0 && d2 < 1e-20))
+        {
+            double inv = 1.0 / Math.Sqrt(d2);
+            dx *= inv;
+            dy *= inv;
+            dScaled = true;
+        }
+    }
+
+    public static void EvaluateShadedRow(
+        int width,
+        int height,
+        int y,
+        double originX,
+        double originY,
+        double halfW,
+        double halfH,
+        in FormulaParams formula,
+        float[] mu,
+        float[] minRadius,
+        float[] trapDist,
+        float[] normalX,
+        float[] normalY,
+        bool needsMinRadius,
+        bool computeNormals,
+        int orbitTrapMode)
+    {
+        double cy = originY - ((y + 0.5) / height - 0.5) * 2.0 * halfH;
+        int row = y * width;
+        bool useCardioidCheck = !needsMinRadius
+            && !formula.Julia
+            && FormulaParams.TryGetIntegerExponent(formula.Power, out int intExp)
+            && intExp == 2;
+
+        for (int x = 0; x < width; x++)
+        {
+            double cx = originX + ((x + 0.5) / width - 0.5) * 2.0 * halfW;
+            int idx = row + x;
+
+            if (useCardioidCheck && IsInMandelbrotCardioidOrBulb(cx, cy))
+            {
+                mu[idx] = -1f;
+                minRadius[idx] = 0f;
+                trapDist[idx] = 0f;
+                normalX[idx] = 0f;
+                normalY[idx] = 0f;
+                continue;
+            }
+
+            if (formula.Julia)
+                EvaluateShadedPoint(cx, cy, formula.JuliaRe, formula.JuliaIm, formula.Power, formula.MaxIterations, true, needsMinRadius, computeNormals, orbitTrapMode, out mu[idx], out minRadius[idx], out trapDist[idx], out normalX[idx], out normalY[idx]);
+            else
+                EvaluateShadedPoint(0, 0, cx, cy, formula.Power, formula.MaxIterations, false, needsMinRadius, computeNormals, orbitTrapMode, out mu[idx], out minRadius[idx], out trapDist[idx], out normalX[idx], out normalY[idx]);
+        }
+    }
+
+    static void EvaluateShadedPoint(
+        double zx,
+        double zy,
+        double cx,
+        double cy,
+        double power,
+        int maxIterations,
+        bool julia,
+        bool needsMinRadius,
+        bool computeNormals,
+        int orbitTrapMode,
+        out float outMu,
+        out float outMinRadius,
+        out float outTrapDist,
+        out float outNx,
+        out float outNy)
+    {
+        outNx = 0f;
+        outNy = 0f;
+
+        if (maxIterations < 1 || !double.IsFinite(power) || Math.Abs(power) < FormulaParams.MinNonZeroPower)
+        {
+            outMu = -1f;
+            outMinRadius = 0f;
+            outTrapDist = 0f;
+            return;
+        }
+
+        const double bailout2 = Bailout * Bailout;
+        double minR = double.MaxValue;
+        double minTrap = double.MaxValue;
+        double dx = julia ? 1.0 : 0.0;
+        double dy = 0.0;
+        bool dScaled = false;
+        bool addOne = !julia;
+        bool trackTrap = orbitTrapMode != 0;
+        bool isInteger = FormulaParams.TryGetIntegerExponent(power, out int n);
+
+        for (int i = 0; i < maxIterations; i++)
+        {
+            double r2 = zx * zx + zy * zy;
+            if (needsMinRadius && r2 < minR) minR = r2;
+
+            if (!double.IsFinite(r2) || r2 > bailout2)
+            {
+                Escape esc = Escaped(i, r2, isInteger ? n : power, needsMinRadius ? minR : 0);
+                outMu = esc.Mu;
+                outMinRadius = esc.MinRadius;
+                outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : TrapDistance(zx, zy, orbitTrapMode)) : 0f;
+
+                if (computeNormals)
+                {
+                    if (r2 < 1e12)
+                        RefineNormalStep(ref zx, ref zy, cx, cy, power, isInteger, n, addOne, ref dx, ref dy, ref dScaled);
+                    ComputeUnitNormal(zx, zy, dx, dy, out outNx, out outNy);
+                }
+
+                return;
+            }
+
+            if (trackTrap && i > 0)
+            {
+                double td = TrapDistance(zx, zy, orbitTrapMode);
+                if (td < minTrap) minTrap = td;
+            }
+
+            if (isInteger)
+            {
+                if (computeNormals)
+                {
+                    StepDerivativeInteger(zx, zy, n, addOne, ref dx, ref dy, ref dScaled, out double pzx, out double pzy);
+                    zx = pzx + cx;
+                    zy = pzy + cy;
+                }
+                else
+                {
+                    if (n == 2)
+                    {
+                        double nx = zx * zx - zy * zy + cx;
+                        zy = 2.0 * zx * zy + cy;
+                        zx = nx;
+                    }
+                    else
+                    {
+                        if (!PowInteger(ref zx, ref zy, n))
+                        {
+                            outMu = i;
+                            outMinRadius = needsMinRadius ? Radius(minR) : 0f;
+                            outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : 0.0) : 0f;
+                            return;
+                        }
+
+                        zx += cx;
+                        zy += cy;
+                    }
+                }
+            }
+            else
+            {
+                if (r2 == 0.0)
+                {
+                    if (power > 0.0)
+                    {
+                        if (computeNormals)
+                        {
+                            dx = addOne && !dScaled ? 1.0 : 0.0;
+                            dy = 0.0;
+                        }
+
+                        zx = cx;
+                        zy = cy;
+                        continue;
+                    }
+
+                    outMu = i;
+                    outMinRadius = needsMinRadius ? Radius(minR) : 0f;
+                    outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : 0.0) : 0f;
+                    return;
+                }
+
+                double radius = Math.Sqrt(r2);
+                double theta = Math.Atan2(zy, zx);
+                if (computeNormals)
+                {
+                    double rp = power * Math.Pow(radius, power - 1.0);
+                    double ap = (power - 1.0) * theta;
+                    double pr = rp * Math.Cos(ap);
+                    double pi = rp * Math.Sin(ap);
+                    double ndx = pr * dx - pi * dy;
+                    double ndy = pr * dy + pi * dx;
+                    if (addOne && !dScaled) ndx += 1.0;
+                    dx = ndx;
+                    dy = ndy;
+                    RenormalizeDerivative(ref dx, ref dy, ref dScaled);
+                }
+
+                double raised = Math.Pow(radius, power);
+                double angle = power * theta;
+                zx = raised * Math.Cos(angle) + cx;
+                zy = raised * Math.Sin(angle) + cy;
+            }
+
+            if (!double.IsFinite(zx) || !double.IsFinite(zy))
+            {
+                outMu = i;
+                outMinRadius = needsMinRadius ? Radius(minR) : 0f;
+                outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : 0.0) : 0f;
+                return;
+            }
+        }
+
+        outMu = -1f;
+        outMinRadius = needsMinRadius ? Radius(minR) : 0f;
+        outTrapDist = trackTrap ? (float)(minTrap < 1e15 ? minTrap : TrapDistance(zx, zy, orbitTrapMode)) : 0f;
+    }
+
+    static void RefineNormalStep(
+        ref double zx,
+        ref double zy,
+        double cx,
+        double cy,
+        double power,
+        bool isInteger,
+        int n,
+        bool addOne,
+        ref double dx,
+        ref double dy,
+        ref bool dScaled)
+    {
+        if (isInteger)
+        {
+            StepDerivativeInteger(zx, zy, n, addOne, ref dx, ref dy, ref dScaled, out double pzx, out double pzy);
+            zx = pzx + cx;
+            zy = pzy + cy;
+        }
+        else
+        {
+            double r2 = zx * zx + zy * zy;
+            if (r2 <= 0.0) return;
+            double radius = Math.Sqrt(r2);
+            double theta = Math.Atan2(zy, zx);
+            double rp = power * Math.Pow(radius, power - 1.0);
+            double ap = (power - 1.0) * theta;
+            double pr = rp * Math.Cos(ap);
+            double pi = rp * Math.Sin(ap);
+            double ndx = pr * dx - pi * dy;
+            double ndy = pr * dy + pi * dx;
+            if (addOne && !dScaled) ndx += 1.0;
+            dx = ndx;
+            dy = ndy;
+            RenormalizeDerivative(ref dx, ref dy, ref dScaled);
+            double raised = Math.Pow(radius, power);
+            double angle = power * theta;
+            zx = raised * Math.Cos(angle) + cx;
+            zy = raised * Math.Sin(angle) + cy;
+        }
+    }
 }

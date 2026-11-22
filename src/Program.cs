@@ -1,5 +1,6 @@
 ﻿using System.Globalization;
 using Mandelbrot.Visualizer.App;
+using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Diagnostics;
 using Mandelbrot.Visualizer.Shared;
 
@@ -12,6 +13,14 @@ FloatExp? scale = null;
 double? power = null;
 int? maxIter = null;
 bool forceCpu = false;
+bool normalLighting = false;
+bool cursorLight = false;
+float? lightX = null;
+float? lightY = null;
+double? lightAngle = null;
+bool fullscreen = false;
+OrbitTrapMode orbitTrap = OrbitTrapMode.None;
+InteriorStyle? interior = null;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -38,6 +47,44 @@ for (int i = 0; i < args.Length; i++)
         case "--cpu":
             forceCpu = true;
             break;
+        case "--fullscreen":
+            fullscreen = true;
+            break;
+        case "--lighting":
+        case "--3d":
+            normalLighting = true;
+            break;
+        case "--mouse-light":
+            normalLighting = true;
+            cursorLight = true;
+            break;
+        case "--light" when i + 1 < args.Length:
+            string[] lparts = args[++i].Split(',', 2);
+            if (lparts.Length == 2
+                && float.TryParse(lparts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out float lx)
+                && float.TryParse(lparts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float ly))
+            {
+                normalLighting = true;
+                cursorLight = true;
+                lightX = lx;
+                lightY = ly;
+            }
+            break;
+        case "--angle" when i + 1 < args.Length:
+            if (double.TryParse(args[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedAngle))
+            {
+                normalLighting = true;
+                lightAngle = parsedAngle;
+            }
+            break;
+        case "--trap" when i + 1 < args.Length:
+            if (Enum.TryParse<OrbitTrapMode>(args[++i], true, out OrbitTrapMode parsedTrap))
+                orbitTrap = parsedTrap;
+            break;
+        case "--interior" when i + 1 < args.Length:
+            if (Enum.TryParse<InteriorStyle>(args[++i], true, out InteriorStyle parsedInterior))
+                interior = parsedInterior;
+            break;
     }
 }
 
@@ -56,7 +103,7 @@ if (centerArg != null)
     }
 }
 
-var options = new LaunchOptions(screenshot, centerX, centerY, scale, power, maxIter, forceCpu);
+var options = new LaunchOptions(screenshot, centerX, centerY, scale, power, maxIter, forceCpu, normalLighting, orbitTrap, interior, cursorLight, lightX, lightY, lightAngle, fullscreen);
 using var host = new VisualizerHost(options);
 host.Run();
 return 0;
