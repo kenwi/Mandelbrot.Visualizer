@@ -1,246 +1,110 @@
-using System.Globalization;
-using System.Numerics;
-using Mandelbrot.Visualizer.Coloring;
-using Mandelbrot.Visualizer.Controls;
-using Mandelbrot.Visualizer.Formula;
-using Mandelbrot.Visualizer.Rendering;
-using Mandelbrot.Visualizer.Viewport;
+using Mandelbrot.Visualizer.Features.Capture;
+using Mandelbrot.Visualizer.Features.Coloring;
+using Mandelbrot.Visualizer.Features.Diagnostics;
+using Mandelbrot.Visualizer.Features.Formula;
+using Mandelbrot.Visualizer.Features.Navigation;
+using Mandelbrot.Visualizer.Features.Rendering;
+using Mandelbrot.Visualizer.Shared;
 using ZeroElectric.Vinculum;
 
 namespace Mandelbrot.Visualizer.App;
 
+/// <summary>
+/// Thin application shell owning the Raylib window lifecycle and frame loop,
+/// delegating all domain behavior to vertical feature slices.
+/// </summary>
 public sealed class VisualizerHost : IDisposable
 {
-    readonly FractalView _view = new();
-    readonly VisualizerSettings _settings = new();
-    readonly ControlPanel _panel = new();
-    readonly FractalRenderer _renderer = new();
-    readonly GpuFractalRenderer _gpu = new();
-    readonly string? _screenshotPath;
+    readonly NavigationFeature _navigation = new();
+    readonly FormulaFeature _formula = new();
+    readonly ColoringFeature _coloring = new();
+    readonly RenderingFeature _rendering = new();
+    readonly CaptureFeature _capture;
+    readonly DiagnosticsFeature _diagnostics = new();
+    readonly SidePanel _panel = new();
 
-    bool _dragging;
     bool _quit;
-    double _lastClickTime = -1;
-    Vector2 _lastCursor;
-    bool _hasCursor;
-    DateTime _interactUntil = DateTime.MinValue;
-    RenderRequest _submitted;
-    bool _hasSubmitted;
-    int _stableWidth = -1;
-    int _stableHeight = -1;
-    int _stableFrames;
 
-    public VisualizerHost(string? screenshotPath) => _screenshotPath = screenshotPath;
+    public VisualizerHost(string? screenshotPath)
+        => _capture = new CaptureFeature(screenshotPath);
 
     public void Run()
     {
         Raylib.SetConfigFlags(ConfigFlags.FLAG_WINDOW_RESIZABLE | ConfigFlags.FLAG_VSYNC_HINT);
-        Raylib.InitWindow(1440, 900, "Multibrot");
+        Raylib.InitWindow(0, 0, "Multibrot");
         Raylib.SetWindowMinSize(1100, 760);
         Raylib.SetTargetFPS(60);
         Raylib.SetExitKey(KeyboardKey.KEY_NULL);
-        ControlPanel.ApplyTheme();
-        _gpu.Load();
+        PanelTheme.Apply();
+        _rendering.Load();
+        _capture.StartClock();
 
-        var started = DateTime.UtcNow;
         while (!Raylib.WindowShouldClose() && !_quit)
         {
             int screenWidth = Raylib.GetScreenWidth();
             int screenHeight = Raylib.GetScreenHeight();
-            int canvasWidth = _panel.Visible ? screenWidth - ControlPanel.Width : screenWidth;
+            int canvasWidth = Math.Max(1, _panel.Visible ? screenWidth - SidePanel.Width : screenWidth);
             int canvasHeight = screenHeight;
-            if (canvasWidth < 1) canvasWidth = 1;
 
-            if (screenWidth == _stableWidth && screenHeight == _stableHeight)
-                _stableFrames++;
-            else
-            {
-                _stableWidth = screenWidth;
-                _stableHeight = screenHeight;
-                _stableFrames = 1;
-            }
+            _capture.TrackWindowSize(screenWidth, screenHeight);
 
-            bool viewChanged = HandleNavigation(canvasWidth, canvasHeight);
-            bool finalQuality = DateTime.UtcNow >= _interactUntil && !_dragging;
-            if (_screenshotPath != null) finalQuality = true;
-            bool gpu = UsingGpu();
+            bool dirty = HandleInput(canvasWidth, canvasHeight);
+            bool finalQuality = _capture.ForceFinalQuality || !_navigation.IsInteracting;
 
-            if (!gpu) _renderer.Upload();
+            _rendering.PrepareFrame(_coloring.State.Mode);
 
             Raylib.BeginDrawing();
-            Raylib.ClearBackground(new Color(4, 6, 12, 255));
-            if (gpu)
-                _gpu.Draw(canvasWidth, canvasHeight, FrameRequest(canvasWidth, canvasHeight));
-            else
-                _renderer.Draw(canvasWidth, canvasHeight);
+            Raylib.ClearBackground(PanelTheme.CanvasBackground);
+            _rendering.DrawCanvas(canvasWidth, canvasHeight, _navigation.State, _formula.State, _coloring.State);
 
             if (!_panel.Visible)
-                DrawHud();
+                _diagnostics.DrawHud(canvasWidth, canvasHeight, _formula.State, _coloring.State.Mode, _navigation, _rendering);
 
-            Vector2 mouse = Raylib.GetMousePosition();
-            bool cursorOnCanvas = mouse.X >= 0 && mouse.X < canvasWidth && mouse.Y >= 0 && mouse.Y < canvasHeight;
-            _view.ScreenToComplex(mouse.X, mouse.Y, canvasWidth, canvasHeight, out double cursorRe, out double cursorIm);
-
-            bool wasJulia = _settings.Julia;
-            bool settingsChanged = _panel.Draw(
-                _settings,
-                _view,
+            dirty |= _panel.Draw(
                 screenWidth,
                 screenHeight,
-                cursorRe,
-                cursorIm,
-                cursorOnCanvas,
-                StatusLine(gpu),
-                FrameTimeText(gpu),
-                out bool resetView,
-                out bool saveImage);
+                canvasWidth,
+                canvasHeight,
+                _navigation,
+                _formula,
+                _coloring,
+                _rendering,
+                _capture,
+                _diagnostics);
 
-            if (resetView)
-            {
-                if (_settings.Julia) _view.ResetJulia();
-                else _view.ResetMandelbrot();
-                viewChanged = true;
-            }
-
-            if (wasJulia != _settings.Julia)
-            {
-                if (_settings.Julia) _view.ResetJulia();
-                else _view.ResetMandelbrot();
-                viewChanged = true;
-            }
-
-            if (saveImage) SaveImage();
-
-            string? capturedShot = null;
-            bool cpuReady = !gpu && _hasSubmitted && _submitted.FinalQuality && _renderer.HasImage && !_renderer.IsBusy;
-            bool gpuReady = gpu && _gpu.HasImage;
-            if (_screenshotPath is string shot && _stableFrames >= 45 && (cpuReady || gpuReady))
-            {
-                capturedShot = shot;
-                RlGl.rlDrawRenderBatchActive();
-                Image screen = Raylib.LoadImageFromScreen();
-                Raylib.ExportImage(screen, Path.ChangeExtension(shot, ".window.png"));
-                Raylib.UnloadImage(screen);
-            }
-
+            _capture.CaptureWindowIfReady(_rendering, _coloring.State.Mode);
             Raylib.EndDrawing();
 
-            if (!UsingGpu() && (viewChanged || settingsChanged || !_hasSubmitted || SizeChanged(canvasWidth, canvasHeight, finalQuality)))
-                Submit(canvasWidth, canvasHeight, finalQuality);
+            _rendering.SubmitIfNeeded(
+                canvasWidth,
+                canvasHeight,
+                _navigation.State,
+                _formula.State,
+                _coloring.State,
+                finalQuality,
+                dirty);
 
-            if (capturedShot != null)
-            {
-                if (gpu) _gpu.Save(capturedShot);
-                else _renderer.Save(capturedShot);
-                break;
-            }
-
-            if (_screenshotPath != null && DateTime.UtcNow - started > TimeSpan.FromSeconds(30))
+            if (_capture.ShouldExitAfterFrame(_rendering, _coloring.State.Mode))
                 break;
         }
 
-        _gpu.Dispose();
-        _renderer.Dispose();
+        _rendering.Dispose();
         Raylib.CloseWindow();
     }
 
-    bool HandleNavigation(int canvasWidth, int canvasHeight)
+    bool HandleInput(int canvasWidth, int canvasHeight)
     {
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_ESCAPE))
         {
-            if (_panel.CapturesKeyboard) _panel.CancelEdit();
-            else _quit = true;
+            if (_panel.EditScope.CapturesKeyboard)
+                _panel.EditScope.CancelAll();
+            else
+                _quit = true;
         }
 
-        Vector2 mouse = Raylib.GetMousePosition();
-        bool onCanvas = !_panel.Visible || mouse.X < canvasWidth;
-        bool changed = false;
-
-        if (Raylib.IsMouseButtonPressed(MouseButton.MOUSE_BUTTON_LEFT) && onCanvas)
-        {
-            double now = Raylib.GetTime();
-            if (now - _lastClickTime < 0.3)
-            {
-                double factor = Raylib.IsKeyDown(KeyboardKey.KEY_LEFT_SHIFT) ? 2.0 : 0.5;
-                _view.ZoomAt(mouse.X, mouse.Y, canvasWidth, canvasHeight, factor);
-                changed = true;
-                Touch();
-            }
-            _lastClickTime = now;
-            _dragging = true;
-        }
-
-        if (Raylib.IsMouseButtonReleased(MouseButton.MOUSE_BUTTON_LEFT))
-            _dragging = false;
-
-        if (_dragging && onCanvas)
-        {
-            Vector2 delta = Raylib.GetMouseDelta();
-            if (delta.X != 0 || delta.Y != 0)
-            {
-                _view.PanPixels(delta.X, delta.Y, canvasWidth, canvasHeight);
-                changed = true;
-                Touch();
-            }
-        }
-
-        float wheel = Raylib.GetMouseWheelMove();
-        if (wheel != 0 && onCanvas)
-        {
-            _view.ZoomAt(mouse.X, mouse.Y, canvasWidth, canvasHeight, Math.Exp(-wheel * 0.18));
-            changed = true;
-            Touch();
-        }
-
-        if (!_panel.CapturesKeyboard)
-            changed |= HandleKeys(canvasWidth, canvasHeight);
-
-        if (onCanvas)
-        {
-            _lastCursor = mouse;
-            _hasCursor = true;
-        }
-
-        return changed;
-    }
-
-    bool HandleKeys(int canvasWidth, int canvasHeight)
-    {
-        bool changed = false;
-        double aspect = canvasWidth / (double)Math.Max(canvasHeight, 1);
-
-        if (Raylib.IsKeyPressed(KeyboardKey.KEY_R))
-        {
-            if (_settings.Julia) _view.ResetJulia();
-            else _view.ResetMandelbrot();
-            changed = true;
-        }
-
-        if (Raylib.IsKeyPressed(KeyboardKey.KEY_C))
-        {
-            _settings.CyclePalette();
-            changed = true;
-        }
-
-        if (Raylib.IsKeyPressed(KeyboardKey.KEY_J))
-        {
-            _settings.Julia = !_settings.Julia;
-            if (_settings.Julia) _view.ResetJulia();
-            else _view.ResetMandelbrot();
-            changed = true;
-        }
-
-        if (Raylib.IsKeyPressed(KeyboardKey.KEY_G))
-        {
-            _settings.UseGpu = !_settings.UseGpu;
-            changed = true;
-        }
-
-        if (Raylib.IsKeyPressed(KeyboardKey.KEY_V))
-        {
-            _settings.UseSimd = !_settings.UseSimd;
-            changed = true;
-        }
+        bool changed = _navigation.HandlePointer(canvasWidth, canvasHeight, _panel.Visible);
+        if (_panel.EditScope.CapturesKeyboard)
+            return changed;
 
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_H))
             _panel.Visible = !_panel.Visible;
@@ -248,209 +112,19 @@ public sealed class VisualizerHost : IDisposable
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_F11))
             Raylib.ToggleFullscreen();
 
-        if (Raylib.IsKeyPressed(KeyboardKey.KEY_S))
-            SaveImage();
+        changed |= _navigation.HandleKeys(canvasWidth, canvasHeight, _formula.State.Julia);
+        changed |= _formula.HandleKeys(out bool juliaToggled, out bool interactive);
+        if (juliaToggled)
+            _navigation.ResetFor(_formula.State.Julia);
+        if (interactive)
+            _navigation.Touch();
 
-        double powerDelta = 0;
-        double dt = Math.Min(Raylib.GetFrameTime(), 0.05f);
-        if (Raylib.IsKeyDown(KeyboardKey.KEY_RIGHT_BRACKET))
-            powerDelta += 1.5 * dt;
-        if (Raylib.IsKeyDown(KeyboardKey.KEY_LEFT_BRACKET))
-            powerDelta -= 1.5 * dt;
-        if (Raylib.IsKeyPressed(KeyboardKey.KEY_RIGHT_BRACKET))
-            powerDelta += 0.1;
-        if (Raylib.IsKeyPressed(KeyboardKey.KEY_LEFT_BRACKET))
-            powerDelta -= 0.1;
-        if (powerDelta != 0)
-        {
-            _settings.NudgePower(powerDelta);
-            changed = true;
-            Touch();
-        }
-
-        if (Raylib.IsKeyPressed(KeyboardKey.KEY_MINUS) || Raylib.IsKeyPressed(KeyboardKey.KEY_KP_SUBTRACT))
-        {
-            _settings.NudgeIterations(-25);
-            changed = true;
-        }
-
-        if (Raylib.IsKeyPressed(KeyboardKey.KEY_EQUAL) || Raylib.IsKeyPressed(KeyboardKey.KEY_KP_ADD))
-        {
-            _settings.NudgeIterations(25);
-            changed = true;
-        }
-
-        double nudge = _view.Scale * 0.02;
-        bool shift = Raylib.IsKeyDown(KeyboardKey.KEY_LEFT_SHIFT) || Raylib.IsKeyDown(KeyboardKey.KEY_RIGHT_SHIFT);
-        bool up = Raylib.IsKeyDown(KeyboardKey.KEY_UP);
-        bool down = Raylib.IsKeyDown(KeyboardKey.KEY_DOWN);
-        if (Raylib.IsKeyDown(KeyboardKey.KEY_LEFT)) { _view.CenterX -= nudge * aspect; changed = true; Touch(); }
-        if (Raylib.IsKeyDown(KeyboardKey.KEY_RIGHT)) { _view.CenterX += nudge * aspect; changed = true; Touch(); }
-        if (shift && up != down)
-        {
-            double step = Math.Min(Raylib.GetFrameTime(), 0.05f);
-            double factor = Math.Pow(2.2, down ? step : -step);
-            _view.ZoomAt(canvasWidth * 0.5, canvasHeight * 0.5, canvasWidth, canvasHeight, factor);
-            changed = true;
-            Touch();
-        }
-        else
-        {
-            if (up) { _view.CenterY += nudge; changed = true; Touch(); }
-            if (down) { _view.CenterY -= nudge; changed = true; Touch(); }
-        }
+        changed |= _coloring.HandleKeys();
+        changed |= _rendering.HandleKeys();
+        _capture.HandleKeys(_rendering, _coloring.State.Mode);
 
         return changed;
     }
 
-    void Touch() => _interactUntil = DateTime.UtcNow.AddMilliseconds(180);
-
-    void Submit(int canvasWidth, int canvasHeight, bool finalQuality)
-    {
-        int divisor = finalQuality ? 1 : 4;
-        int width = Math.Max(1, canvasWidth / divisor);
-        int height = Math.Max(1, canvasHeight / divisor);
-        var request = new RenderRequest(
-            width,
-            height,
-            _view.CenterX,
-            _view.CenterY,
-            _view.Scale,
-            _settings.Power,
-            _settings.MaxIterations,
-            _settings.Palette,
-            _settings.Mode,
-            _settings.Smooth,
-            _settings.Interior,
-            _settings.Density,
-            _settings.Phase,
-            _settings.Julia,
-            _settings.JuliaRe,
-            _settings.JuliaIm,
-            _settings.UseSimd,
-            finalQuality);
-
-        if (_hasSubmitted && request == _submitted) return;
-        _submitted = request;
-        _hasSubmitted = true;
-        _renderer.Request(request);
-    }
-
-    bool SizeChanged(int canvasWidth, int canvasHeight, bool finalQuality)
-    {
-        int divisor = finalQuality ? 1 : 4;
-        int width = Math.Max(1, canvasWidth / divisor);
-        int height = Math.Max(1, canvasHeight / divisor);
-        return !_hasSubmitted || _submitted.Width != width || _submitted.Height != height || _submitted.FinalQuality != finalQuality;
-    }
-
-    void DrawHud()
-    {
-        string device = UsingGpu() ? "GPU" : UsingSimd() ? "CPU SIMD" : "CPU";
-        Raylib.DrawText($"n = {_settings.Power.ToString("0.####", CultureInfo.InvariantCulture)}    iter {_settings.MaxIterations}    {device}", 16, 16, 20, new Color(230, 232, 238, 255));
-        Raylib.DrawText("H shows the panel", 16, 42, 16, new Color(170, 176, 188, 255));
-        int hudY = 66;
-        if (_hasCursor)
-        {
-            _view.ScreenToComplex(_lastCursor.X, _lastCursor.Y, Raylib.GetScreenWidth(), Raylib.GetScreenHeight(), out double re, out double im);
-            Raylib.DrawText($"{re:0.######}  {(im >= 0 ? "+" : "-")} {Math.Abs(im):0.######} i", 16, hudY, 16, new Color(170, 176, 188, 255));
-            hudY += 22;
-        }
-
-        if (_settings.ShowFrameTime && TryFrameTime(UsingGpu(), out double frameMs))
-            Raylib.DrawText($"Frame  {FormatFrameTime(frameMs)}", 16, hudY, 16, new Color(170, 176, 188, 255));
-    }
-
-    void SaveImage()
-    {
-        Directory.CreateDirectory("captures");
-        string path = Path.Combine("captures", $"multibrot-{DateTime.Now:yyyyMMdd-HHmmss}.png");
-        if (UsingGpu() && _gpu.HasImage) _gpu.Save(path);
-        else _renderer.Save(path);
-    }
-
-    bool UsingGpu()
-        => _settings.UseGpu && _gpu.IsAvailable && _settings.Mode != ColoringMode.Histogram;
-
-    string StatusLine(bool gpu)
-    {
-        int fps = Raylib.GetFPS();
-        if (_settings.UseGpu && !_gpu.IsAvailable)
-            return "No shader, using CPU";
-        if (gpu)
-            return $"GPU    {fps} fps";
-        if (_settings.UseSimd && !SimdMultibrot.IsSupported)
-            return "No SIMD, using CPU";
-
-        bool simd = UsingSimd();
-        string name = simd ? "CPU SIMD" : "CPU";
-        if (_settings.UseGpu && _settings.Mode == ColoringMode.Histogram)
-            return $"{(simd ? "SIMD" : "CPU")} histogram    {fps} fps";
-        if (_renderer.IsBusy)
-            return simd ? "SIMD rendering..." : "CPU rendering...";
-        return $"{name}    {fps} fps";
-    }
-
-    bool UsingSimd() => _settings.UseSimd && SimdMultibrot.IsSupported;
-
-    string? FrameTimeText(bool gpu)
-    {
-        if (!_settings.ShowFrameTime)
-            return null;
-        return TryFrameTime(gpu, out double ms) ? FormatFrameTime(ms) : "...";
-    }
-
-    bool TryFrameTime(bool gpu, out double milliseconds)
-    {
-        if (gpu && _gpu.HasFrameTime)
-        {
-            milliseconds = _gpu.LastFrameMs;
-            return true;
-        }
-
-        if (!gpu && _renderer.HasFrameTime)
-        {
-            milliseconds = _renderer.LastFrameMs;
-            return true;
-        }
-
-        milliseconds = 0;
-        return false;
-    }
-
-    static string FormatFrameTime(double milliseconds)
-    {
-        if (milliseconds < 100)
-            return $"{milliseconds:0.0} ms";
-        if (milliseconds < 10_000)
-            return $"{milliseconds:0} ms";
-        return $"{milliseconds / 1000:0.00} s";
-    }
-
-    RenderRequest FrameRequest(int width, int height)
-        => new(
-            width,
-            height,
-            _view.CenterX,
-            _view.CenterY,
-            _view.Scale,
-            _settings.Power,
-            _settings.MaxIterations,
-            _settings.Palette,
-            _settings.Mode,
-            _settings.Smooth,
-            _settings.Interior,
-            _settings.Density,
-            _settings.Phase,
-            _settings.Julia,
-            _settings.JuliaRe,
-            _settings.JuliaIm,
-            false,
-            true);
-
-    public void Dispose()
-    {
-        _gpu.Dispose();
-        _renderer.Dispose();
-    }
+    public void Dispose() => _rendering.Dispose();
 }

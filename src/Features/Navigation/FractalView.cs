@@ -1,29 +1,45 @@
-namespace Mandelbrot.Visualizer.Viewport;
+namespace Mandelbrot.Visualizer.Features.Navigation;
 
 /// <summary>
-/// Complex-plane window. Scale is the half-height of the view.
+/// Immutable snapshot of the complex-plane viewport. Scale is half the visible height.
+/// </summary>
+public readonly record struct ViewportState(double CenterX, double CenterY, double Scale)
+{
+    public double HalfWidth(int width, int height)
+        => Scale * width / (double)Math.Max(height, 1);
+}
+
+/// <summary>
+/// Complex-plane camera supporting pan, zoom around a screen point, and Mandelbrot/Julia reset.
 /// </summary>
 public sealed class FractalView
 {
     public const double MinScale = 1e-14;
     public const double MaxScale = 8;
+    public const double DefaultMandelbrotScale = 1.35;
+    public const double DefaultJuliaScale = 1.6;
 
     public double CenterX { get; set; } = -0.5;
     public double CenterY { get; set; }
-    public double Scale { get; set; } = 1.35;
+    public double Scale { get; set; } = DefaultMandelbrotScale;
 
-    public void ResetMandelbrot()
-    {
-        CenterX = -0.5;
-        CenterY = 0;
-        Scale = 1.35;
-    }
+    public ViewportState Snapshot => new(CenterX, CenterY, Scale);
+    public double ZoomFactor => DefaultMandelbrotScale / Math.Max(Scale, MinScale);
 
-    public void ResetJulia()
+    public void ResetFor(bool julia)
     {
-        CenterX = 0;
-        CenterY = 0;
-        Scale = 1.6;
+        if (julia)
+        {
+            CenterX = 0;
+            CenterY = 0;
+            Scale = DefaultJuliaScale;
+        }
+        else
+        {
+            CenterX = -0.5;
+            CenterY = 0;
+            Scale = DefaultMandelbrotScale;
+        }
     }
 
     public void ScreenToComplex(double px, double py, int width, int height, out double cx, out double cy)

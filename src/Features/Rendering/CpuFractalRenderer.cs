@@ -1,16 +1,17 @@
 using System.Diagnostics;
 using System.Numerics;
-using Mandelbrot.Visualizer.Coloring;
-using Mandelbrot.Visualizer.Formula;
+using Mandelbrot.Visualizer.Features.Coloring;
+using Mandelbrot.Visualizer.Features.Formula;
+using Mandelbrot.Visualizer.Shared;
 using ZeroElectric.Vinculum;
 
-namespace Mandelbrot.Visualizer.Rendering;
+namespace Mandelbrot.Visualizer.Features.Rendering;
 
 /// <summary>
 /// Renders the set off the UI thread and uploads the finished frame on the main thread.
-/// A full-quality pass is abandoned when a navigation preview is requested. Previews run to completion.
+/// A full-quality pass is abandoned when a navigation preview is requested; previews run to completion.
 /// </summary>
-public sealed class FractalRenderer : IDisposable
+public sealed class CpuFractalRenderer : IFractalBackend
 {
     readonly object _gate = new();
     RenderRequest? _latest;
@@ -25,6 +26,7 @@ public sealed class FractalRenderer : IDisposable
     int _textureWidth;
     int _textureHeight;
 
+    public bool IsAvailable => true;
     public bool IsBusy { get; private set; }
     public bool HasImage => _hasTexture;
     public bool HasFrameTime { get; private set; }
@@ -86,15 +88,12 @@ public sealed class FractalRenderer : IDisposable
         int count = width * height;
         var mu = new float[count];
         var minRadius = new float[count];
-        double halfH = request.Scale;
-        double halfW = request.Scale * width / (double)height;
-        double originX = request.CenterX;
-        double originY = request.CenterY;
-        double power = request.Power;
-        int maxIterations = request.MaxIterations;
-        bool julia = request.Julia;
-        double juliaRe = request.JuliaRe;
-        double juliaIm = request.JuliaIm;
+
+        double halfH = request.View.Scale;
+        double halfW = request.View.HalfWidth(width, height);
+        double originX = request.View.CenterX;
+        double originY = request.View.CenterY;
+        FormulaParams formula = request.Formula;
         int abandoned = 0;
 
         Parallel.For(0, height, y =>
@@ -107,39 +106,16 @@ public sealed class FractalRenderer : IDisposable
             }
 
             if (request.UseSimd && SimdMultibrot.IsSupported)
-            {
-                SimdMultibrot.EvaluateRow(width, height, y, originX, originY, halfW, halfH, power, maxIterations, julia, juliaRe, juliaIm, mu, minRadius);
-                return;
-            }
-
-            double cy = originY - ((y + 0.5) / height - 0.5) * 2.0 * halfH;
-            int row = y * width;
-            for (int x = 0; x < width; x++)
-            {
-                double cx = originX + ((x + 0.5) / width - 0.5) * 2.0 * halfW;
-                MultibrotFormula.Escape escape = julia
-                    ? MultibrotFormula.Evaluate(cx, cy, juliaRe, juliaIm, power, maxIterations)
-                    : MultibrotFormula.Evaluate(0, 0, cx, cy, power, maxIterations);
-                mu[row + x] = escape.Mu;
-                minRadius[row + x] = escape.MinRadius;
-            }
+                SimdMultibrot.EvaluateRow(width, height, y, originX, originY, halfW, halfH, formula, mu, minRadius);
+            else
+                MultibrotFormula.EvaluateScalarRow(width, height, y, originX, originY, halfW, halfH, formula, mu, minRadius);
         });
 
         if (Volatile.Read(ref abandoned) != 0 || Volatile.Read(ref _generation) != generation)
             return null;
 
         var pixels = new Color[count];
-        Palette.Map(
-            mu,
-            minRadius,
-            pixels,
-            request.Palette,
-            request.Mode,
-            request.Smooth,
-            request.Interior,
-            request.Density,
-            request.Phase,
-            maxIterations);
+        Palette.Map(mu, minRadius, pixels, request.Coloring, formula.MaxIterations);
         return pixels;
     }
 
@@ -170,7 +146,7 @@ public sealed class FractalRenderer : IDisposable
     {
         if (!_hasTexture || canvasWidth < 1 || canvasHeight < 1)
         {
-            Raylib.DrawRectangle(0, 0, Math.Max(canvasWidth, 1), Math.Max(canvasHeight, 1), new Color(4, 6, 12, 255));
+            Raylib.DrawRectangle(0, 0, Math.Max(canvasWidth, 1), Math.Max(canvasHeight, 1), PanelTheme.CanvasBackground);
             return;
         }
 
@@ -192,7 +168,7 @@ public sealed class FractalRenderer : IDisposable
         if (_hasTexture && _textureWidth == width && _textureHeight == height) return;
         if (_hasTexture) Raylib.UnloadTexture(_texture);
 
-        Image image = Raylib.GenImageColor(width, height, new Color(4, 6, 12, 255));
+        Image image = Raylib.GenImageColor(width, height, PanelTheme.CanvasBackground);
         _texture = Raylib.LoadTextureFromImage(image);
         Raylib.UnloadImage(image);
         Raylib.SetTextureFilter(_texture, TextureFilter.TEXTURE_FILTER_BILINEAR);

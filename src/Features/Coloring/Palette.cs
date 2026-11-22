@@ -1,19 +1,11 @@
 using ZeroElectric.Vinculum;
 
-namespace Mandelbrot.Visualizer.Coloring;
+namespace Mandelbrot.Visualizer.Features.Coloring;
 
-public enum ColoringMode
-{
-    Cyclic = 0,
-    Histogram = 1,
-}
-
-public enum InteriorStyle
-{
-    Black = 0,
-    Glow = 1,
-}
-
+/// <summary>
+/// Single source of truth for all palettes, escape-time mapping, cyclic shading, and histogram CDF.
+/// Both the CPU renderer and the GPU PaletteLut texture sample directly from this class.
+/// </summary>
 public static class Palette
 {
     public const string ComboItems = "Classic;Fire;Electric;Ocean;Sunset;Ice;Grayscale;Rainbow";
@@ -86,15 +78,10 @@ public static class Palette
         ReadOnlySpan<float> mu,
         ReadOnlySpan<float> minRadius,
         Span<Color> pixels,
-        int palette,
-        ColoringMode mode,
-        bool smooth,
-        InteriorStyle interior,
-        double density,
-        double phase,
+        in ColoringParams coloring,
         int maxIterations)
     {
-        double[]? cdf = mode == ColoringMode.Histogram
+        double[]? cdf = coloring.Mode == ColoringMode.Histogram
             ? BuildHistogram(mu, maxIterations)
             : null;
 
@@ -103,27 +90,66 @@ public static class Palette
             float sample = mu[i];
             if (sample < 0f)
             {
-                pixels[i] = Interior(interior, minRadius[i]);
+                pixels[i] = Interior(coloring.Interior, minRadius[i]);
                 continue;
             }
 
             double t;
             if (cdf != null)
             {
-                double position = HistogramPosition(cdf, sample, smooth, maxIterations);
-                t = position * Math.Max(density, 0.05) + phase;
+                double position = HistogramPosition(cdf, sample, coloring.Smooth);
+                t = position * Math.Max(coloring.Density, 0.05) + coloring.Phase;
             }
             else
             {
-                double value = smooth ? sample : Math.Floor(sample);
-                t = value * 0.035 * Math.Max(density, 0.05) + phase;
+                double value = coloring.Smooth ? sample : Math.Floor(sample);
+                t = value * 0.035 * Math.Max(coloring.Density, 0.05) + coloring.Phase;
             }
 
-            Color color = Sample(palette, t);
-            if (mode == ColoringMode.Cyclic)
+            Color color = Sample(coloring.Palette, t);
+            if (coloring.Mode == ColoringMode.Cyclic)
                 color = Scale(color, Math.Tanh(sample / 9.0));
             pixels[i] = color;
         }
+    }
+
+    public static Color Sample(int palette, double t)
+    {
+        t -= Math.Floor(t);
+        return SampleUnwrapped(palette, t);
+    }
+
+    /// <summary>
+    /// Samples a palette across t in [0, 1] without wrapping t = 1 back to 0.
+    /// Used when baking LUT rows so non-cyclic palettes preserve their endpoint stop.
+    /// </summary>
+    public static Color SampleUnwrapped(int palette, double t)
+    {
+        t = Math.Clamp(t, 0.0, 1.0);
+        if (palette == 7)
+            return Hsv(t >= 1.0 ? 0.0 : t, 0.82, 1.0);
+
+        Stop[] stops = palette switch
+        {
+            1 => Fire,
+            2 => Electric,
+            3 => Ocean,
+            4 => Sunset,
+            5 => Ice,
+            6 => Grayscale,
+            _ => Classic,
+        };
+
+        for (int i = 1; i < stops.Length; i++)
+        {
+            if (t > stops[i].T) continue;
+            float span = stops[i].T - stops[i - 1].T;
+            double local = span <= 0 ? 0 : (t - stops[i - 1].T) / span;
+            return Lerp(stops[i - 1], stops[i], local);
+        }
+
+        Stop last = stops[^1];
+        return new Color((int)last.R, (int)last.G, (int)last.B, 255);
     }
 
     static double[] BuildHistogram(ReadOnlySpan<float> mu, int maxIterations)
@@ -154,7 +180,7 @@ public static class Palette
         return cdf;
     }
 
-    static double HistogramPosition(double[] cdf, float sample, bool smooth, int maxIterations)
+    static double HistogramPosition(double[] cdf, float sample, bool smooth)
     {
         int bucket = (int)sample;
         if (bucket < 0) bucket = 0;
@@ -163,9 +189,7 @@ public static class Palette
         if (!smooth) return here;
 
         int next = Math.Min(bucket + 1, cdf.Length - 1);
-        double frac = sample - bucket;
-        if (frac < 0) frac = 0;
-        if (frac > 1) frac = 1;
+        double frac = Math.Clamp(sample - bucket, 0, 1);
         return here + (cdf[next] - here) * frac;
     }
 
@@ -180,34 +204,6 @@ public static class Palette
             (int)(12 + 28 * t),
             (int)(32 + 90 * t),
             255);
-    }
-
-    public static Color Sample(int palette, double t)
-    {
-        t -= Math.Floor(t);
-        if (palette == 7) return Hsv(t, 0.82, 1.0);
-
-        Stop[] stops = palette switch
-        {
-            1 => Fire,
-            2 => Electric,
-            3 => Ocean,
-            4 => Sunset,
-            5 => Ice,
-            6 => Grayscale,
-            _ => Classic,
-        };
-
-        for (int i = 1; i < stops.Length; i++)
-        {
-            if (t > stops[i].T) continue;
-            float span = stops[i].T - stops[i - 1].T;
-            double local = span <= 0 ? 0 : (t - stops[i - 1].T) / span;
-            return Lerp(stops[i - 1], stops[i], local);
-        }
-
-        Stop last = stops[^1];
-        return new Color((int)last.R, (int)last.G, (int)last.B, 255);
     }
 
     static Color Lerp(Stop a, Stop b, double t)
@@ -234,9 +230,8 @@ public static class Palette
         double c = v * s;
         double x = c * (1 - Math.Abs(h * 6 % 2 - 1));
         double m = v - c;
-        double r, g, b;
         int sector = (int)(h * 6) % 6;
-        (r, g, b) = sector switch
+        (double r, double g, double b) = sector switch
         {
             0 => (c, x, 0d),
             1 => (x, c, 0d),

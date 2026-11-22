@@ -1,9 +1,8 @@
-namespace Mandelbrot.Visualizer.Formula;
+namespace Mandelbrot.Visualizer.Features.Formula;
 
 /// <summary>
-/// One orbit of z = z^n + c. Integer powers use complex multiplication.
-/// Other powers, including fractions such as 1.4, use the polar form and the
-/// principal branch of the argument.
+/// Evaluates orbits of z = z^n + c. Integer powers use complex multiplication;
+/// fractional powers use the polar form and the principal branch of the argument.
 /// </summary>
 public static class MultibrotFormula
 {
@@ -16,20 +15,46 @@ public static class MultibrotFormula
 
     public static Escape Evaluate(double zx, double zy, double cx, double cy, double power, int maxIterations)
     {
-        if (maxIterations < 1 || !double.IsFinite(power) || Math.Abs(power) < 1e-6)
+        if (maxIterations < 1 || !double.IsFinite(power) || Math.Abs(power) < FormulaParams.MinNonZeroPower)
             return new Escape(-1f, 0f);
 
-        double rounded = Math.Round(power);
-        if (Math.Abs(power - rounded) < 1e-8 && rounded is >= -16 and <= 16)
+        if (FormulaParams.TryGetIntegerExponent(power, out int n))
         {
-            int n = (int)rounded;
-            if (n == 2) return EvaluateSquare(zx, zy, cx, cy, maxIterations);
-            if (n == 3) return EvaluateCube(zx, zy, cx, cy, maxIterations);
-            if (n == 4) return EvaluateFourth(zx, zy, cx, cy, maxIterations);
-            return EvaluateInteger(zx, zy, cx, cy, n, maxIterations);
+            return n switch
+            {
+                2 => EvaluateSquare(zx, zy, cx, cy, maxIterations),
+                3 => EvaluateCube(zx, zy, cx, cy, maxIterations),
+                4 => EvaluateFourth(zx, zy, cx, cy, maxIterations),
+                _ => EvaluateInteger(zx, zy, cx, cy, n, maxIterations),
+            };
         }
 
         return EvaluateReal(zx, zy, cx, cy, power, maxIterations);
+    }
+
+    public static void EvaluateScalarRow(
+        int width,
+        int height,
+        int y,
+        double originX,
+        double originY,
+        double halfW,
+        double halfH,
+        in FormulaParams formula,
+        float[] mu,
+        float[] minRadius)
+    {
+        double cy = originY - ((y + 0.5) / height - 0.5) * 2.0 * halfH;
+        int row = y * width;
+        for (int x = 0; x < width; x++)
+        {
+            double cx = originX + ((x + 0.5) / width - 0.5) * 2.0 * halfW;
+            Escape escape = formula.Julia
+                ? Evaluate(cx, cy, formula.JuliaRe, formula.JuliaIm, formula.Power, formula.MaxIterations)
+                : Evaluate(0, 0, cx, cy, formula.Power, formula.MaxIterations);
+            mu[row + x] = escape.Mu;
+            minRadius[row + x] = escape.MinRadius;
+        }
     }
 
     static Escape EvaluateSquare(double zx, double zy, double cx, double cy, int maxIterations)
@@ -110,12 +135,12 @@ public static class MultibrotFormula
                 return Escaped(i, r2, power, minR);
 
             if (!PowInteger(ref zx, ref zy, power))
-                return new Escape(i, (float)Math.Sqrt(minR == double.MaxValue ? 0 : minR));
+                return Stopped(i, minR);
 
             zx += cx;
             zy += cy;
             if (double.IsNaN(zx) || double.IsInfinity(zx))
-                return new Escape(i, Radius(minR));
+                return Stopped(i, minR);
         }
 
         return Inside(minR);
@@ -153,7 +178,7 @@ public static class MultibrotFormula
             zy = raised * Math.Sin(angle) + cy;
 
             if (double.IsNaN(zx) || double.IsInfinity(zx))
-                return new Escape(i, Radius(minR));
+                return Stopped(i, minR);
         }
 
         return Inside(minR);
