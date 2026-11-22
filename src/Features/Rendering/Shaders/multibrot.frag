@@ -213,9 +213,7 @@ void main()
         cy = pixelIm;
     }
 
-    int steps = maxIter;
-    if (steps < 1) steps = 1;
-    if (steps > 4000) steps = 4000;
+    int steps = max(maxIter, 1);
 
     bool escaped = false;
     float mu = -1.0;
@@ -227,11 +225,29 @@ void main()
         return;
     }
 
+    if (interiorStyle == 0 && juliaSet == 0 && exponent == 2)
+    {
+        float xm = cx.x - 0.25;
+        float cy2 = cy.x * cy.x;
+        float q = xm * xm + cy2;
+        if (q * (q + xm) <= 0.25 * cy2)
+        {
+            finalColor = vec4(interiorColor(0.0), 1.0);
+            return;
+        }
+
+        float xp = cx.x + 1.0;
+        if (xp * xp + cy2 <= 0.0625)
+        {
+            finalColor = vec4(interiorColor(0.0), 1.0);
+            return;
+        }
+    }
+
     if (exponent == 100)
     {
-        for (int i = 0; i < 4000; i++)
+        for (int i = 0; i < steps; i++)
         {
-            if (i >= steps) break;
             float r2 = zx.x * zx.x + zy.x * zy.x;
             if (escapedAt(r2, i, minR, mu))
             {
@@ -269,9 +285,8 @@ void main()
     }
     else
     {
-        for (int i = 0; i < 4000; i++)
+        for (int i = 0; i < steps; i++)
         {
-            if (i >= steps) break;
             float r2 = zx.x * zx.x + zy.x * zy.x;
             if (escapedAt(r2, i, minR, mu))
             {

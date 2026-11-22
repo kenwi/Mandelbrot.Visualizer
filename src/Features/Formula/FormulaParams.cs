@@ -1,3 +1,5 @@
+using Mandelbrot.Visualizer.Shared;
+
 namespace Mandelbrot.Visualizer.Features.Formula;
 
 /// <summary>
@@ -14,7 +16,7 @@ public readonly record struct FormulaParams(
     public const double PowerMin = -6;
     public const double PowerMax = 12;
     public const int IterationMin = 16;
-    public const int IterationMax = 4000;
+    public const int IterationMax = 100_000;
     public const double MinNonZeroPower = 1e-4;
     public const int IntegerExponentMin = -16;
     public const int IntegerExponentMax = 16;
@@ -33,6 +35,14 @@ public readonly record struct FormulaParams(
 
     public static int ClampIterations(int value)
         => Math.Clamp(value, IterationMin, IterationMax);
+
+    public static int AutoIterationsForScale(FloatExp scale, double referenceScale = 1.35)
+    {
+        if (scale.IsZero) return IterationMax;
+        double logZoom = Math.Max(0.0, Math.Log10(referenceScale) - scale.Log10());
+        int computed = 250 + (int)(180.0 * Math.Pow(logZoom, 1.45));
+        return ClampIterations(computed);
+    }
 
     public static bool TryGetIntegerExponent(double power, out int exponent)
     {
@@ -53,4 +63,7 @@ public readonly record struct FormulaParams(
 
     public static bool TryGetPositiveSimdExponent(double power, out int exponent)
         => TryGetIntegerExponent(power, out exponent) && exponent >= 1;
+
+    public static bool SupportsPerturbation(double power, out int exponent)
+        => TryGetIntegerExponent(power, out exponent) && exponent >= 2;
 }

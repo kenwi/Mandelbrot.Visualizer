@@ -17,6 +17,8 @@
   <ItemGroup>
     <EmbeddedResource Include="Features/Rendering/Shaders/multibrot.vert" LogicalName="Shaders.multibrot.vert" />
     <EmbeddedResource Include="Features/Rendering/Shaders/multibrot.frag" LogicalName="Shaders.multibrot.frag" />
+    <EmbeddedResource Include="Features/Rendering/Shaders/multibrot_f32.frag" LogicalName="Shaders.multibrot_f32.frag" />
+    <EmbeddedResource Include="Features/Rendering/Shaders/multibrot_perturb.frag" LogicalName="Shaders.multibrot_perturb.frag" />
   </ItemGroup>
 
 </Project>

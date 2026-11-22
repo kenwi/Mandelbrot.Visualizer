@@ -4,7 +4,7 @@ using ZeroElectric.Vinculum;
 namespace Mandelbrot.Visualizer.Features.Formula;
 
 /// <summary>
-/// Vertical slice owning power, iteration limit, and Julia-set configuration,
+/// Vertical slice owning power, iteration limit, auto-iterations, and Julia-set configuration,
 /// keyboard shortcuts ([ ] - + J), and side-panel editors.
 /// </summary>
 public sealed class FormulaFeature
@@ -15,6 +15,28 @@ public sealed class FormulaFeature
     readonly DoubleField _juliaImField = new();
 
     public FormulaParams State { get; private set; } = FormulaParams.Default;
+    public bool AutoIterations { get; private set; }
+
+    public void SetFormula(FormulaParams formula)
+    {
+        State = formula;
+        _powerField.Invalidate();
+        _iterationsField.Invalidate();
+        _juliaReField.Invalidate();
+        _juliaImField.Invalidate();
+    }
+
+    public bool SyncAutoIterations(FloatExp scale)
+    {
+        if (!AutoIterations) return false;
+
+        int target = FormulaParams.AutoIterationsForScale(scale);
+        if (target == State.MaxIterations) return false;
+
+        State = State with { MaxIterations = target };
+        _iterationsField.Invalidate();
+        return true;
+    }
 
     public bool HandleKeys(out bool juliaToggled, out bool interactive)
     {
@@ -48,13 +70,17 @@ public sealed class FormulaFeature
 
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_MINUS) || Raylib.IsKeyPressed(KeyboardKey.KEY_KP_SUBTRACT))
         {
-            State = State with { MaxIterations = FormulaParams.ClampIterations(State.MaxIterations - 25) };
+            AutoIterations = false;
+            int step = State.MaxIterations >= 2000 ? 250 : 25;
+            State = State with { MaxIterations = FormulaParams.ClampIterations(State.MaxIterations - step) };
             changed = true;
         }
 
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_EQUAL) || Raylib.IsKeyPressed(KeyboardKey.KEY_KP_ADD))
         {
-            State = State with { MaxIterations = FormulaParams.ClampIterations(State.MaxIterations + 25) };
+            AutoIterations = false;
+            int step = State.MaxIterations >= 2000 ? 250 : 25;
+            State = State with { MaxIterations = FormulaParams.ClampIterations(State.MaxIterations + step) };
             changed = true;
         }
 
@@ -79,13 +105,22 @@ public sealed class FormulaFeature
         layout.Label("Iterations");
         changed |= layout.LogSlider(State.MaxIterations, FormulaParams.IterationMin, FormulaParams.IterationMax, value =>
         {
+            AutoIterations = false;
             State = State with { MaxIterations = FormulaParams.ClampIterations((int)Math.Round(value)) };
             _iterationsField.Invalidate();
         });
         changed |= _iterationsField.Draw(ref layout, editScope, State.MaxIterations, value =>
         {
+            AutoIterations = false;
             State = State with { MaxIterations = FormulaParams.ClampIterations(value) };
         });
+
+        bool auto = AutoIterations;
+        if (layout.Check("Auto iterations", ref auto))
+        {
+            AutoIterations = auto;
+            changed = true;
+        }
 
         return changed;
     }

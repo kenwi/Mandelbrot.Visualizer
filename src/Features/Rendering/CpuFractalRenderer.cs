@@ -2,25 +2,44 @@ using System.Diagnostics;
 using System.Numerics;
 using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Formula;
+using Mandelbrot.Visualizer.Features.Navigation;
 using Mandelbrot.Visualizer.Shared;
 using ZeroElectric.Vinculum;
 
 namespace Mandelbrot.Visualizer.Features.Rendering;
 
 /// <summary>
-/// Renders the set off the UI thread and uploads the finished frame on the main thread.
-/// A full-quality pass is abandoned when a navigation preview is requested; previews run to completion.
+/// Renders the set off the UI thread with orbit-buffer caching for instant recoloring,
+/// reusable frame buffers, dynamic row scheduling, real-axis symmetry, and deep-zoom perturbation.
 /// </summary>
 public sealed class CpuFractalRenderer : IFractalBackend
 {
+    readonly record struct OrbitKey(
+        int Width,
+        int Height,
+        ViewportState View,
+        FormulaParams Formula,
+        bool UseSimd,
+        bool NeedsMinRadius,
+        ReferenceOrbit? ReferenceOrbit);
+
     readonly object _gate = new();
     RenderRequest? _latest;
+    ReferenceOrbit? _latestOrbit;
     int _generation;
     bool _running;
     bool _inflightIsFinal;
-    Color[]? _ready;
+
+    Color[]? _readyPixels;
+    Color[]? _sparePixels;
+    Color[]? _uploadPixels;
     int _readyWidth;
     int _readyHeight;
+
+    float[]? _mu;
+    float[]? _minRadius;
+    OrbitKey? _cachedOrbitKey;
+
     Texture _texture;
     bool _hasTexture;
     int _textureWidth;
@@ -32,13 +51,14 @@ public sealed class CpuFractalRenderer : IFractalBackend
     public bool HasFrameTime { get; private set; }
     public double LastFrameMs { get; private set; }
 
-    public void Request(RenderRequest request)
+    public void Request(RenderRequest request, ReferenceOrbit? referenceOrbit = null)
     {
         if (request.Width < 1 || request.Height < 1) return;
 
         lock (_gate)
         {
             _latest = request;
+            _latestOrbit = referenceOrbit;
             if (_running && _inflightIsFinal && !request.FinalQuality)
                 _generation++;
 
@@ -50,23 +70,27 @@ public sealed class CpuFractalRenderer : IFractalBackend
     void StartLocked()
     {
         RenderRequest request = _latest!.Value;
+        ReferenceOrbit? orbit = _latestOrbit;
         _latest = null;
+        _latestOrbit = null;
         _running = true;
         _inflightIsFinal = request.FinalQuality;
         IsBusy = true;
         int generation = _generation;
-        Task.Run(() => Render(request, generation));
+        Task.Run(() => Render(request, orbit, generation));
     }
 
-    void Render(RenderRequest request, int generation)
+    void Render(RenderRequest request, ReferenceOrbit? orbit, int generation)
     {
         long started = Stopwatch.GetTimestamp();
-        Color[]? pixels = Compute(request, generation);
+        Color[]? pixels = Compute(request, orbit, generation);
         lock (_gate)
         {
             if (pixels != null)
             {
-                _ready = pixels;
+                if (_readyPixels != null)
+                    _sparePixels = _readyPixels;
+                _readyPixels = pixels;
                 _readyWidth = request.Width;
                 _readyHeight = request.Height;
                 LastFrameMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
@@ -81,42 +105,143 @@ public sealed class CpuFractalRenderer : IFractalBackend
         }
     }
 
-    Color[]? Compute(RenderRequest request, int generation)
+    Color[]? Compute(RenderRequest request, ReferenceOrbit? orbit, int generation)
     {
         int width = request.Width;
         int height = request.Height;
         int count = width * height;
-        var mu = new float[count];
-        var minRadius = new float[count];
+        bool needsMinRadius = request.Coloring.Interior == InteriorStyle.Glow;
+
+        var orbitKey = new OrbitKey(
+            width,
+            height,
+            request.View,
+            request.Formula,
+            request.UseSimd && SimdMultibrot.IsSupported,
+            needsMinRadius,
+            orbit);
+
+        if (_mu == null || _mu.Length < count)
+        {
+            _mu = new float[count];
+            _minRadius = new float[count];
+            _cachedOrbitKey = null;
+        }
+
+        float[] mu = _mu;
+        float[] minRadius = _minRadius!;
+
+        if (_cachedOrbitKey != orbitKey)
+        {
+            if (!EvaluateOrbits(request, orbit, generation, needsMinRadius, mu, minRadius))
+            {
+                _cachedOrbitKey = null;
+                return null;
+            }
+
+            _cachedOrbitKey = orbitKey;
+        }
+
+        Color[]? recycled;
+        lock (_gate)
+        {
+            recycled = _sparePixels;
+            _sparePixels = null;
+        }
+
+        Color[] pixels = recycled != null && recycled.Length >= count
+            ? recycled
+            : new Color[count];
+
+        Palette.Map(
+            mu.AsSpan(0, count),
+            minRadius.AsSpan(0, count),
+            pixels.AsSpan(0, count),
+            request.Coloring,
+            request.Formula.MaxIterations);
+
+        return pixels;
+    }
+
+    bool EvaluateOrbits(RenderRequest request, ReferenceOrbit? orbit, int generation, bool needsMinRadius, float[] mu, float[] minRadius)
+    {
+        int width = request.Width;
+        int height = request.Height;
+        FormulaParams formula = request.Formula;
+        bool usePerturbation = orbit != null && request.View.IsDeepZoom;
+
+        FloatExp refOffsetX = FloatExp.Zero;
+        FloatExp refOffsetY = FloatExp.Zero;
+        FloatExp halfHExact = request.View.ScaleExact;
+        FloatExp halfWExact = request.View.HalfWidthExact(width, height);
+        if (usePerturbation)
+        {
+            int prec = orbit!.PrecisionBits;
+            refOffsetX = BigFloat.Sub(request.View.CenterXExact, orbit.RefRe, prec).ToFloatExp();
+            refOffsetY = BigFloat.Sub(request.View.CenterYExact, orbit.RefIm, prec).ToFloatExp();
+        }
 
         double halfH = request.View.Scale;
         double halfW = request.View.HalfWidth(width, height);
         double originX = request.View.CenterX;
         double originY = request.View.CenterY;
-        FormulaParams formula = request.Formula;
+        bool useSimd = request.UseSimd && SimdMultibrot.IsSupported;
+
+        bool mirrorY = !usePerturbation
+            && !formula.Julia
+            && Math.Abs(originY) < 1e-15
+            && FormulaParams.TryGetIntegerExponent(formula.Power, out _);
+        int rowLimit = mirrorY ? (height + 1) / 2 : height;
+
+        const int chunk = 4;
+        int nextRow = 0;
         int abandoned = 0;
+        int workers = Math.Min(Environment.ProcessorCount, Math.Max(1, (rowLimit + chunk - 1) / chunk));
 
-        Parallel.For(0, height, y =>
+        Parallel.For(0, workers, _ =>
         {
-            if (Volatile.Read(ref abandoned) != 0) return;
-            if ((y & 15) == 0 && Volatile.Read(ref _generation) != generation)
+            while (Volatile.Read(ref abandoned) == 0)
             {
-                Volatile.Write(ref abandoned, 1);
-                return;
-            }
+                int start = Interlocked.Add(ref nextRow, chunk) - chunk;
+                if (start >= rowLimit)
+                    break;
 
-            if (request.UseSimd && SimdMultibrot.IsSupported)
-                SimdMultibrot.EvaluateRow(width, height, y, originX, originY, halfW, halfH, formula, mu, minRadius);
-            else
-                MultibrotFormula.EvaluateScalarRow(width, height, y, originX, originY, halfW, halfH, formula, mu, minRadius);
+                if (Volatile.Read(ref _generation) != generation)
+                {
+                    Volatile.Write(ref abandoned, 1);
+                    break;
+                }
+
+                int end = Math.Min(start + chunk, rowLimit);
+                for (int y = start; y < end; y++)
+                {
+                    if (usePerturbation)
+                    {
+                        PerturbationFormula.EvaluateRow(width, height, y, refOffsetX, refOffsetY, halfWExact, halfHExact, orbit!, formula, mu, minRadius, needsMinRadius);
+                    }
+                    else if (useSimd)
+                    {
+                        SimdMultibrot.EvaluateRow(width, height, y, originX, originY, halfW, halfH, formula, mu, minRadius, needsMinRadius);
+                    }
+                    else
+                    {
+                        MultibrotFormula.EvaluateScalarRow(width, height, y, originX, originY, halfW, halfH, formula, mu, minRadius, needsMinRadius);
+                    }
+
+                    if (mirrorY)
+                    {
+                        int mirror = height - 1 - y;
+                        if (mirror != y)
+                        {
+                            Array.Copy(mu, y * width, mu, mirror * width, width);
+                            Array.Copy(minRadius, y * width, minRadius, mirror * width, width);
+                        }
+                    }
+                }
+            }
         });
 
-        if (Volatile.Read(ref abandoned) != 0 || Volatile.Read(ref _generation) != generation)
-            return null;
-
-        var pixels = new Color[count];
-        Palette.Map(mu, minRadius, pixels, request.Coloring, formula.MaxIterations);
-        return pixels;
+        return Volatile.Read(ref abandoned) == 0 && Volatile.Read(ref _generation) == generation;
     }
 
     public void Upload()
@@ -126,13 +251,16 @@ public sealed class CpuFractalRenderer : IFractalBackend
         int height;
         lock (_gate)
         {
-            pixels = _ready;
+            pixels = _readyPixels;
+            if (pixels == null) return;
+
             width = _readyWidth;
             height = _readyHeight;
-            _ready = null;
+            _readyPixels = null;
+            if (_uploadPixels != null)
+                _sparePixels = _uploadPixels;
+            _uploadPixels = pixels;
         }
-
-        if (pixels == null) return;
 
         EnsureTexture(width, height);
         unsafe

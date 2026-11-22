@@ -25,6 +25,9 @@ public sealed class NavigationFeature
 
     public void ResetFor(bool julia) => _view.ResetFor(julia);
 
+    public void SetExact(BigFloat centerX, BigFloat centerY, FloatExp scale)
+        => _view.SetExact(centerX, centerY, scale);
+
     public bool HandlePointer(int canvasWidth, int canvasHeight, bool panelVisible)
     {
         Vector2 mouse = Raylib.GetMousePosition();
@@ -88,21 +91,21 @@ public sealed class NavigationFeature
             changed = true;
         }
 
-        double nudge = _view.Scale * 0.02;
+        const double nudge = 0.02;
         bool shift = Raylib.IsKeyDown(KeyboardKey.KEY_LEFT_SHIFT) || Raylib.IsKeyDown(KeyboardKey.KEY_RIGHT_SHIFT);
         bool up = Raylib.IsKeyDown(KeyboardKey.KEY_UP);
         bool down = Raylib.IsKeyDown(KeyboardKey.KEY_DOWN);
 
         if (Raylib.IsKeyDown(KeyboardKey.KEY_LEFT))
         {
-            _view.CenterX -= nudge * aspect;
+            _view.NudgeCenter(-nudge * aspect, 0);
             changed = true;
             Touch();
         }
 
         if (Raylib.IsKeyDown(KeyboardKey.KEY_RIGHT))
         {
-            _view.CenterX += nudge * aspect;
+            _view.NudgeCenter(nudge * aspect, 0);
             changed = true;
             Touch();
         }
@@ -119,14 +122,14 @@ public sealed class NavigationFeature
         {
             if (up)
             {
-                _view.CenterY += nudge;
+                _view.NudgeCenter(0, nudge);
                 changed = true;
                 Touch();
             }
 
             if (down)
             {
-                _view.CenterY -= nudge;
+                _view.NudgeCenter(0, -nudge);
                 changed = true;
                 Touch();
             }
@@ -158,8 +161,8 @@ public sealed class NavigationFeature
             ? $"{cursorRe:0.######}  {FormatSigned(cursorIm)} i"
             : "over the panel";
         layout.Label($"Cursor  {cursor}");
-        layout.Label($"Center  {_view.CenterX:0.####}  {FormatSigned(_view.CenterY)} i");
-        layout.Label($"Zoom  {_view.ZoomFactor:0.##}x    n = {power:0.####}");
+        layout.Label($"Center  {_view.CenterX.FormatSummary()}  {FormatSigned(_view.CenterY.ToDouble())} i");
+        layout.Label($"Zoom  {_view.ZoomDisplay}    n = {power:0.####}");
     }
 
     static string FormatSigned(double value)

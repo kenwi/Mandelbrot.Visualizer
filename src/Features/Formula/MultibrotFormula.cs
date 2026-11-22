@@ -7,13 +7,33 @@ namespace Mandelbrot.Visualizer.Features.Formula;
 public static class MultibrotFormula
 {
     public const double Bailout = 16.0;
+    const double PeriodicityEpsilon = 1e-13;
 
     public readonly record struct Escape(float Mu, float MinRadius)
     {
         public bool Inside => Mu < 0f;
     }
 
-    public static Escape Evaluate(double zx, double zy, double cx, double cy, double power, int maxIterations)
+    public static bool IsInMandelbrotCardioidOrBulb(double cx, double cy)
+    {
+        double xm = cx - 0.25;
+        double cy2 = cy * cy;
+        double q = xm * xm + cy2;
+        if (q * (q + xm) <= 0.25 * cy2)
+            return true;
+
+        double xp = cx + 1.0;
+        return xp * xp + cy2 <= 0.0625;
+    }
+
+    public static Escape Evaluate(
+        double zx,
+        double zy,
+        double cx,
+        double cy,
+        double power,
+        int maxIterations,
+        bool needsMinRadius = true)
     {
         if (maxIterations < 1 || !double.IsFinite(power) || Math.Abs(power) < FormulaParams.MinNonZeroPower)
             return new Escape(-1f, 0f);
@@ -22,10 +42,10 @@ public static class MultibrotFormula
         {
             return n switch
             {
-                2 => EvaluateSquare(zx, zy, cx, cy, maxIterations),
-                3 => EvaluateCube(zx, zy, cx, cy, maxIterations),
-                4 => EvaluateFourth(zx, zy, cx, cy, maxIterations),
-                _ => EvaluateInteger(zx, zy, cx, cy, n, maxIterations),
+                2 => EvaluateSquare(zx, zy, cx, cy, maxIterations, needsMinRadius),
+                3 => EvaluateCube(zx, zy, cx, cy, maxIterations, needsMinRadius),
+                4 => EvaluateFourth(zx, zy, cx, cy, maxIterations, needsMinRadius),
+                _ => EvaluateInteger(zx, zy, cx, cy, n, maxIterations, needsMinRadius),
             };
         }
 
@@ -42,53 +62,86 @@ public static class MultibrotFormula
         double halfH,
         in FormulaParams formula,
         float[] mu,
-        float[] minRadius)
+        float[] minRadius,
+        bool needsMinRadius = true)
     {
         double cy = originY - ((y + 0.5) / height - 0.5) * 2.0 * halfH;
         int row = y * width;
+        bool useCardioidCheck = !needsMinRadius
+            && !formula.Julia
+            && FormulaParams.TryGetIntegerExponent(formula.Power, out int n)
+            && n == 2;
+
         for (int x = 0; x < width; x++)
         {
             double cx = originX + ((x + 0.5) / width - 0.5) * 2.0 * halfW;
+            if (useCardioidCheck && IsInMandelbrotCardioidOrBulb(cx, cy))
+            {
+                mu[row + x] = -1f;
+                minRadius[row + x] = 0f;
+                continue;
+            }
+
             Escape escape = formula.Julia
-                ? Evaluate(cx, cy, formula.JuliaRe, formula.JuliaIm, formula.Power, formula.MaxIterations)
-                : Evaluate(0, 0, cx, cy, formula.Power, formula.MaxIterations);
+                ? Evaluate(cx, cy, formula.JuliaRe, formula.JuliaIm, formula.Power, formula.MaxIterations, needsMinRadius)
+                : Evaluate(0, 0, cx, cy, formula.Power, formula.MaxIterations, needsMinRadius);
             mu[row + x] = escape.Mu;
             minRadius[row + x] = escape.MinRadius;
         }
     }
 
-    static Escape EvaluateSquare(double zx, double zy, double cx, double cy, int maxIterations)
+    static Escape EvaluateSquare(double zx, double zy, double cx, double cy, int maxIterations, bool needsMinRadius)
     {
         const double bailout2 = Bailout * Bailout;
         double minR = double.MaxValue;
+        double ox = zx, oy = zy;
+        int period = 8;
+        int check = 0;
 
         for (int i = 0; i < maxIterations; i++)
         {
             double x2 = zx * zx;
             double y2 = zy * zy;
             double r2 = x2 + y2;
-            if (r2 < minR) minR = r2;
+            if (needsMinRadius && r2 < minR) minR = r2;
             if (r2 > bailout2)
-                return Escaped(i, r2, 2.0, minR);
+                return Escaped(i, r2, 2.0, needsMinRadius ? minR : 0);
 
             zy = 2.0 * zx * zy + cy;
             zx = x2 - y2 + cx;
+
+            if (!needsMinRadius)
+            {
+                if (Math.Abs(zx - ox) <= PeriodicityEpsilon && Math.Abs(zy - oy) <= PeriodicityEpsilon)
+                    return new Escape(-1f, 0f);
+
+                if (++check >= period)
+                {
+                    ox = zx;
+                    oy = zy;
+                    check = 0;
+                    if (period < 1024) period <<= 1;
+                }
+            }
         }
 
-        return Inside(minR);
+        return needsMinRadius ? Inside(minR) : new Escape(-1f, 0f);
     }
 
-    static Escape EvaluateCube(double zx, double zy, double cx, double cy, int maxIterations)
+    static Escape EvaluateCube(double zx, double zy, double cx, double cy, int maxIterations, bool needsMinRadius)
     {
         const double bailout2 = Bailout * Bailout;
         double minR = double.MaxValue;
+        double ox = zx, oy = zy;
+        int period = 8;
+        int check = 0;
 
         for (int i = 0; i < maxIterations; i++)
         {
             double r2 = zx * zx + zy * zy;
-            if (r2 < minR) minR = r2;
+            if (needsMinRadius && r2 < minR) minR = r2;
             if (r2 > bailout2)
-                return Escaped(i, r2, 3.0, minR);
+                return Escaped(i, r2, 3.0, needsMinRadius ? minR : 0);
 
             double x2 = zx * zx - zy * zy;
             double y2 = 2.0 * zx * zy;
@@ -96,54 +149,102 @@ public static class MultibrotFormula
             double ny = x2 * zy + y2 * zx + cy;
             zx = nx;
             zy = ny;
+
+            if (!needsMinRadius)
+            {
+                if (Math.Abs(zx - ox) <= PeriodicityEpsilon && Math.Abs(zy - oy) <= PeriodicityEpsilon)
+                    return new Escape(-1f, 0f);
+
+                if (++check >= period)
+                {
+                    ox = zx;
+                    oy = zy;
+                    check = 0;
+                    if (period < 1024) period <<= 1;
+                }
+            }
         }
 
-        return Inside(minR);
+        return needsMinRadius ? Inside(minR) : new Escape(-1f, 0f);
     }
 
-    static Escape EvaluateFourth(double zx, double zy, double cx, double cy, int maxIterations)
+    static Escape EvaluateFourth(double zx, double zy, double cx, double cy, int maxIterations, bool needsMinRadius)
     {
         const double bailout2 = Bailout * Bailout;
         double minR = double.MaxValue;
+        double ox = zx, oy = zy;
+        int period = 8;
+        int check = 0;
 
         for (int i = 0; i < maxIterations; i++)
         {
             double r2 = zx * zx + zy * zy;
-            if (r2 < minR) minR = r2;
+            if (needsMinRadius && r2 < minR) minR = r2;
             if (r2 > bailout2)
-                return Escaped(i, r2, 4.0, minR);
+                return Escaped(i, r2, 4.0, needsMinRadius ? minR : 0);
 
             double x2 = zx * zx - zy * zy;
             double y2 = 2.0 * zx * zy;
             zx = x2 * x2 - y2 * y2 + cx;
             zy = 2.0 * x2 * y2 + cy;
+
+            if (!needsMinRadius)
+            {
+                if (Math.Abs(zx - ox) <= PeriodicityEpsilon && Math.Abs(zy - oy) <= PeriodicityEpsilon)
+                    return new Escape(-1f, 0f);
+
+                if (++check >= period)
+                {
+                    ox = zx;
+                    oy = zy;
+                    check = 0;
+                    if (period < 1024) period <<= 1;
+                }
+            }
         }
 
-        return Inside(minR);
+        return needsMinRadius ? Inside(minR) : new Escape(-1f, 0f);
     }
 
-    static Escape EvaluateInteger(double zx, double zy, double cx, double cy, int power, int maxIterations)
+    static Escape EvaluateInteger(double zx, double zy, double cx, double cy, int power, int maxIterations, bool needsMinRadius)
     {
         const double bailout2 = Bailout * Bailout;
         double minR = double.MaxValue;
+        double ox = zx, oy = zy;
+        int period = 8;
+        int check = 0;
 
         for (int i = 0; i < maxIterations; i++)
         {
             double r2 = zx * zx + zy * zy;
-            if (r2 < minR) minR = r2;
+            if (needsMinRadius && r2 < minR) minR = r2;
             if (r2 > bailout2)
-                return Escaped(i, r2, power, minR);
+                return Escaped(i, r2, power, needsMinRadius ? minR : 0);
 
             if (!PowInteger(ref zx, ref zy, power))
-                return Stopped(i, minR);
+                return Stopped(i, needsMinRadius ? minR : 0);
 
             zx += cx;
             zy += cy;
             if (double.IsNaN(zx) || double.IsInfinity(zx))
-                return Stopped(i, minR);
+                return Stopped(i, needsMinRadius ? minR : 0);
+
+            if (!needsMinRadius)
+            {
+                if (Math.Abs(zx - ox) <= PeriodicityEpsilon && Math.Abs(zy - oy) <= PeriodicityEpsilon)
+                    return new Escape(-1f, 0f);
+
+                if (++check >= period)
+                {
+                    ox = zx;
+                    oy = zy;
+                    check = 0;
+                    if (period < 1024) period <<= 1;
+                }
+            }
         }
 
-        return Inside(minR);
+        return needsMinRadius ? Inside(minR) : new Escape(-1f, 0f);
     }
 
     static Escape EvaluateReal(double zx, double zy, double cx, double cy, double power, int maxIterations)

@@ -9,6 +9,15 @@ using ZeroElectric.Vinculum;
 
 namespace Mandelbrot.Visualizer.App;
 
+public sealed record LaunchOptions(
+    string? ScreenshotPath = null,
+    BigFloat? CenterX = null,
+    BigFloat? CenterY = null,
+    FloatExp? Scale = null,
+    double? Power = null,
+    int? MaxIterations = null,
+    bool ForceCpu = false);
+
 /// <summary>
 /// Thin application shell owning the Raylib window lifecycle and frame loop,
 /// delegating all domain behavior to vertical feature slices.
@@ -25,8 +34,31 @@ public sealed class VisualizerHost : IDisposable
 
     bool _quit;
 
-    public VisualizerHost(string? screenshotPath)
-        => _capture = new CaptureFeature(screenshotPath);
+    public VisualizerHost(LaunchOptions options)
+    {
+        _capture = new CaptureFeature(options.ScreenshotPath);
+        if (options.ForceCpu)
+            _rendering.SetUseGpu(false);
+
+        if (options.Power.HasValue || options.MaxIterations.HasValue)
+        {
+            FormulaParams current = _formula.State;
+            _formula.SetFormula(current with
+            {
+                Power = options.Power.HasValue ? FormulaParams.ClampNonZeroPower(options.Power.Value) : current.Power,
+                MaxIterations = options.MaxIterations.HasValue ? FormulaParams.ClampIterations(options.MaxIterations.Value) : current.MaxIterations,
+            });
+        }
+
+        if (options.CenterX.HasValue || options.CenterY.HasValue || options.Scale.HasValue)
+        {
+            ViewportState current = _navigation.State;
+            _navigation.SetExact(
+                options.CenterX ?? current.CenterXExact,
+                options.CenterY ?? current.CenterYExact,
+                options.Scale ?? current.ScaleExact);
+        }
+    }
 
     public void Run()
     {
@@ -49,13 +81,14 @@ public sealed class VisualizerHost : IDisposable
             _capture.TrackWindowSize(screenWidth, screenHeight);
 
             bool dirty = HandleInput(canvasWidth, canvasHeight);
+            dirty |= _formula.SyncAutoIterations(_navigation.State.ScaleExact);
             bool finalQuality = _capture.ForceFinalQuality || !_navigation.IsInteracting;
 
             _rendering.PrepareFrame(_coloring.State.Mode);
 
             Raylib.BeginDrawing();
             Raylib.ClearBackground(PanelTheme.CanvasBackground);
-            _rendering.DrawCanvas(canvasWidth, canvasHeight, _navigation.State, _formula.State, _coloring.State);
+            _rendering.DrawCanvas(canvasWidth, canvasHeight, _navigation.State, _formula.State, _coloring.State, finalQuality);
 
             if (!_panel.Visible)
                 _diagnostics.DrawHud(canvasWidth, canvasHeight, _formula.State, _coloring.State.Mode, _navigation, _rendering);
@@ -72,6 +105,7 @@ public sealed class VisualizerHost : IDisposable
                 _capture,
                 _diagnostics);
 
+            dirty |= _formula.SyncAutoIterations(_navigation.State.ScaleExact);
             _capture.CaptureWindowIfReady(_rendering, _coloring.State.Mode);
             Raylib.EndDrawing();
 
