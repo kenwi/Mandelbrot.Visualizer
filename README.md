@@ -17,7 +17,7 @@ An interactive viewer for the Mandelbrot set and its relatives. Every pixel asks
 - Paint the interior solid or with a glow based on the smallest size the orbit reached.
 - Switch to a Julia set and type the constant `c`, or enable the optional **Julia preview** corner overlay (`P`) to preview the Julia set for the cursor's `c` live and jump straight into it with a click on the preview, right-click, or `Space` (optionally with **Match zoom** to keep the same zoom level for both preview and jump, and returning to your previous map view with a left-click or right-click on the canvas or by toggling `J`).
 - Draw with tiered GPU fragment shaders (native float32, double-float, and deep-zoom perturbation with progressive tiling and idle frame caching), or switch to the CPU backend with orbit caching for instant recoloring. Histogram coloring always uses the CPU.
-- Optional **2x / 4x SSAA** (`2x2` / `4x4` rotated-grid supersampling, hotkey `A` or `--ssaa`) on final frames and PNG captures across both GPU and CPU to eliminate sparkling moire noise on ultra-dense filaments while keeping interactive panning/zooming at 1x speed.
+- Optional **2x / 4x SSAA** (`2x2` / `4x4` rotated-grid supersampling, hotkey `A` or `--ssaa`) on final frames across both GPU and CPU to eliminate sparkling moire noise on ultra-dense filaments while keeping interactive panning/zooming at 1x speed. Saving a PNG (`Save PNG` / `S`) or capturing via `--screenshot` automatically uses the highest SSAA tier (`4x`) and restores your interactive SSAA setting afterward.
 - **Bookmarks & curated landmarks** (`bookmarks.json`): jump to 25 curated spots across all five fractal families (including Seahorse Valley, Elephant Valley, Scepter Valley, Mini-brot at `1e-30`, classic Julia sets, Burning Ship Armada, and family Julia sets), save your own deep-zoom locations with a custom or auto-generated name (`B` or `Save spot`), cycle through all bookmarks with `,` / `.` (or `PageUp` / `PageDown`), and copy a reproducible deep-zoom launch command with **Copy CLI**.
 - Optionally evaluate positive whole-number powers with AVX2 / AVX-512 SIMD (FMA + lane refilling) on the CPU.
 - Optionally show how long the newest image took to generate.
@@ -168,9 +168,9 @@ Supported CLI options:
 - `--match-zoom` - use the current map zoom level for both the Julia preview and one-click Julia jump
 - `--preview-c re,im` - pin the corner live Julia preview to a specific `c` (implies `--julia-preview`)
 - `--ssaa mode` - enable optional final-frame and capture supersampling (`off`, `2x`, `4x`)
-- `--screenshot path.png` - render a final-quality frame, save it (plus a `.window.png` capture), and exit
+- `--screenshot path.png` - render a final-quality frame (automatically using highest `4x` SSAA unless `--ssaa` is explicitly set), save it (plus a `.window.png` capture), and exit
 
-Pictures saved interactively from the app go to `captures/`.
+Pictures saved interactively from the app go to `captures/` (named after the active bookmark title when a bookmark is selected, with automatic `-2`, `-3` suffixes to avoid overwriting).
 
 ## Controls
 

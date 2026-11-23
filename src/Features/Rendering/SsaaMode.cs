@@ -17,6 +17,7 @@ public static class SsaaPattern
 {
     public const string ComboItems = "Off;2x (2x2);4x (4x4)";
     public const int ModeCount = 3;
+    public const SsaaMode Highest = SsaaMode.X4;
 
     static readonly Vector2[] Offsets1 = [Vector2.Zero];
     static readonly Vector2[] Offsets2 = BuildRotatedGrid(2);

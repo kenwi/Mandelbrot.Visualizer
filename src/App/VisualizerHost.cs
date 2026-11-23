@@ -32,7 +32,7 @@ public sealed record LaunchOptions(
     double? PreviewCRe = null,
     double? PreviewCIm = null,
     bool MatchZoom = false,
-    SsaaMode Ssaa = SsaaMode.Off,
+    SsaaMode? Ssaa = null,
     bool? Julia = null,
     double? JuliaRe = null,
     double? JuliaIm = null,
@@ -74,8 +74,9 @@ public sealed class VisualizerHost : IDisposable
         if (options.ForceCpu)
             _rendering.SetUseGpu(false);
 
-        if (options.Ssaa != SsaaMode.Off)
-            _rendering.SetSsaa(options.Ssaa);
+        SsaaMode initialSsaa = CaptureFeature.ResolveLaunchSsaa(options.ScreenshotPath, options.Ssaa);
+        if (initialSsaa != SsaaMode.Off)
+            _rendering.SetSsaa(initialSsaa);
 
         if (options.JuliaPreview || (options.PreviewCRe.HasValue && options.PreviewCIm.HasValue))
             _juliaPreview.Enabled = true;
@@ -229,7 +230,7 @@ public sealed class VisualizerHost : IDisposable
                 _navigation.State,
                 _formula.State,
                 _coloring.State,
-                finalQuality,
+                finalQuality || _capture.ForceFinalQuality,
                 dirty);
 
             if (_capture.ShouldExitAfterFrame(_rendering, _coloring.State.Mode))
@@ -333,7 +334,7 @@ public sealed class VisualizerHost : IDisposable
 
         changed |= _coloring.HandleKeys();
         changed |= _rendering.HandleKeys();
-        _capture.HandleKeys(_rendering, _coloring.State.Mode);
+        changed |= _capture.HandleKeys(_rendering, _coloring.State.Mode, _bookmarks.SelectedName);
 
         return changed;
     }

@@ -1,5 +1,6 @@
 using System.Numerics;
 using Mandelbrot.Visualizer.Features.Bookmarks;
+using Mandelbrot.Visualizer.Features.Capture;
 using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Formula;
 using Mandelbrot.Visualizer.Features.JuliaPreview;
@@ -1136,7 +1137,28 @@ public static class SelfTest
             return false;
         }
 
-        message = $"2x/4x RGSS SSAA valid (dense filament HF energy 1x={hf1:0.0} -> 2x={hf2:0.0} -> 4x={hf4:0.0})";
+        // Verify screenshot/PNG capture auto-upgrades to the highest SSAA tier.
+        if (CaptureFeature.ResolveLaunchSsaa(null, null) != SsaaMode.Off
+            || CaptureFeature.ResolveLaunchSsaa("out.png", null) != SsaaPattern.Highest
+            || CaptureFeature.ResolveLaunchSsaa("out.png", SsaaMode.X2) != SsaaMode.X2)
+        {
+            message = "CaptureFeature.ResolveLaunchSsaa did not auto-upgrade --screenshot captures to highest SSAA";
+            return false;
+        }
+
+        using (var rendering = new RenderingFeature())
+        {
+            rendering.SetSsaa(SsaaMode.Off);
+            var capture = new CaptureFeature(null);
+            bool queued = capture.SaveInteractive(rendering, ColoringMode.Cyclic);
+            if (!queued || !capture.IsSavingInteractive || rendering.Ssaa != SsaaPattern.Highest)
+            {
+                message = "SaveInteractive did not automatically boost SSAA to highest degree while queueing capture";
+                return false;
+            }
+        }
+
+        message = $"2x/4x RGSS SSAA valid (dense filament HF energy 1x={hf1:0.0} -> 2x={hf2:0.0} -> 4x={hf4:0.0}, capture auto-4x)";
         return true;
     }
 
@@ -1318,6 +1340,32 @@ public static class SelfTest
                 || !reloaded.Cycle(+1, nav, formulaFeature, coloringFeature) || reloaded.SelectedIndex != 0)
             {
                 message = "BookmarksFeature.Cycle did not wrap forward and backward across all entries";
+                return false;
+            }
+
+            // Verify bookmark-based screenshot naming and collision avoidance.
+            if (CaptureFeature.SanitizeFileNameSlug("Mini-brot (1e-30)") != "mini-brot-1e-30"
+                || CaptureFeature.SanitizeFileNameSlug("Burning Ship: Armada") != "burning-ship-armada"
+                || CaptureFeature.SanitizeFileNameSlug("Cubic Multibrot (z^3 + c)") != "cubic-multibrot-z3-c")
+            {
+                message = "CaptureFeature.SanitizeFileNameSlug produced unexpected bookmark filename slug";
+                return false;
+            }
+
+            string firstShot = CaptureFeature.BuildInteractiveCapturePath("Seahorse Valley", tempDir);
+            if (!firstShot.EndsWith(Path.Combine(tempDir, "seahorse-valley.png"), StringComparison.Ordinal))
+            {
+                message = $"Expected bookmark screenshot path seahorse-valley.png, got {firstShot}";
+                return false;
+            }
+
+            File.WriteAllText(firstShot, "");
+            string secondShot = CaptureFeature.BuildInteractiveCapturePath("Seahorse Valley", tempDir);
+            string defaultShot = CaptureFeature.BuildInteractiveCapturePath(null, tempDir);
+            if (!secondShot.EndsWith("seahorse-valley-2.png", StringComparison.Ordinal)
+                || !Path.GetFileName(defaultShot).StartsWith("multibrot-", StringComparison.Ordinal))
+            {
+                message = $"Bookmark screenshot collision/fallback naming failed (second={secondShot}, default={defaultShot})";
                 return false;
             }
 

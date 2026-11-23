@@ -47,6 +47,9 @@ public sealed class BookmarksFeature
     public string StorePath => _storePath;
     public IReadOnlyList<BookmarkEntry> Entries => _entries;
     public int SelectedIndex => _selectedIndex;
+    public string? SelectedName => _selectedIndex >= 0 && _selectedIndex < _entries.Count
+        ? _entries[_selectedIndex].DisplayName
+        : null;
     public bool IsDropdownOpen => _dropdownOpen;
     public bool IsSaveModalOpen => _saveModalOpen;
     public bool CapturesInput => _dropdownOpen || _saveModalOpen;

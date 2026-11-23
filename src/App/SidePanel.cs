@@ -88,7 +88,10 @@ public sealed class SidePanel
         if (panelBlocked)
             RayGui.GuiDisable();
 
-        layout.TwoButtons("Reset view", "Save PNG", out bool resetView, out bool saveImage);
+        string savePngLabel = capture.IsSavingInteractive
+            ? $"Saving {SsaaPattern.ShortLabel(SsaaPattern.Highest)}..."
+            : "Save PNG";
+        layout.TwoButtons("Reset view", savePngLabel, out bool resetView, out bool saveImage);
         if (!panelBlocked && resetView)
         {
             EditScope.CancelAll();
@@ -98,7 +101,7 @@ public sealed class SidePanel
         }
 
         if (!panelBlocked && saveImage)
-            capture.SaveInteractive(rendering, coloring.State.Mode);
+            changed |= capture.SaveInteractive(rendering, coloring.State.Mode, bookmarks.SelectedName);
 
         layout.Separator();
         navigation.DrawCursorTelemetry(ref layout, canvasWidth, canvasHeight);
