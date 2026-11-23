@@ -134,22 +134,25 @@ Points that pass through zero are special, because dividing by zero is undefined
 You need the .NET 11 SDK.
 
 ```bash
-dotnet run --project src/Mandelbrot.Visualizer.csproj
+dotnet run -c Release --project src/Mandelbrot.Visualizer.csproj
 ```
+
+> **Note: Always prefer `-c Release` for real exploration and benchmarking.**
+> By default, `dotnet run` builds in `Debug` configuration, which disables RyuJIT optimizations, method inlining, bounds-check elimination, and hardware register allocation for `Vector256` / `Vector512` SIMD values. In `Debug`, SIMD registers are spilled to the stack on every iteration and tight inner loops (`SimdMultibrot` AVX2 / AVX-512 + FMA paths, `BigFloat` reference orbits, perturbation arithmetic, histogram coloring, and CPU `4x` SSAA) run many times slower. Passing `-c Release` enables full JIT optimization so SIMD intrinsics stay in vector registers and the renderer runs at full performance.
 
 Run the headless verification suite (checks known points, SIMD parity, palette LUT endpoints, `BigFloat`/`FloatExp`/`ComplexExp` math, deep-zoom perturbation parity at `1e-25` and `1e-80`, cursor orbit probing, 3D lighting and orbit traps, fractal families, Julia preview jump/return matrix, SSAA, and bookmarks JSON/CLI round-trips):
 
 ```bash
-dotnet run --project src/Mandelbrot.Visualizer.csproj -- --self-test
+dotnet run -c Release --project src/Mandelbrot.Visualizer.csproj -- --self-test
 ```
 
 You can also launch directly to a bookmark, a custom deep-zoom location, or capture a PNG from the command line:
 
 ```bash
-dotnet run --project src/Mandelbrot.Visualizer.csproj -- \
+dotnet run -c Release --project src/Mandelbrot.Visualizer.csproj -- \
   --bookmark "Mini-brot (1e-30)"
 
-dotnet run --project src/Mandelbrot.Visualizer.csproj -- \
+dotnet run -c Release --project src/Mandelbrot.Visualizer.csproj -- \
   --center -0.743643887037158704752191506114774,0.131825904205311970493132056385139 \
   --scale 1e-25 --power 2 --iter 1500 --screenshot captures/deep.png
 ```
