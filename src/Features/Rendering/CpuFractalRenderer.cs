@@ -47,6 +47,8 @@ public sealed class CpuFractalRenderer : IFractalBackend
     float[]? _trapDist;
     float[]? _normalX;
     float[]? _normalY;
+    int[]? _accumRgb;
+    Color[]? _passPixels;
     OrbitKey? _cachedOrbitKey;
 
     Texture _texture;
@@ -54,18 +56,24 @@ public sealed class CpuFractalRenderer : IFractalBackend
     int _textureWidth;
     int _textureHeight;
 
+    int _completedSsaaSamples;
+    int _totalSsaaSamples = 1;
+
     public bool IsAvailable => true;
     public bool IsBusy { get; private set; }
     public bool HasImage => _hasTexture;
     public bool HasFrameTime { get; private set; }
     public double LastFrameMs { get; private set; }
+    public int CompletedSsaaSamples => Volatile.Read(ref _completedSsaaSamples);
+    public int TotalSsaaSamples => Volatile.Read(ref _totalSsaaSamples);
 
-    public bool MatchesUploadedScene(in ViewportState view, in FormulaParams formula, in ColoringParams coloring)
+    public bool MatchesUploadedScene(in ViewportState view, in FormulaParams formula, in ColoringParams coloring, SsaaMode effectiveSsaa)
         => _hasTexture
         && _uploadedRequest is RenderRequest uploaded
         && uploaded.View == view
         && uploaded.Formula == formula
-        && uploaded.Coloring == coloring;
+        && uploaded.Coloring == coloring
+        && uploaded.EffectiveSsaa == effectiveSsaa;
 
     public bool HasUploadedRequest(in RenderRequest request, ReferenceOrbit? orbit)
         => _hasTexture
@@ -151,6 +159,9 @@ public sealed class CpuFractalRenderer : IFractalBackend
         }
     }
 
+    internal Color[]? ComputeHeadless(RenderRequest request, ReferenceOrbit? orbit = null)
+        => Compute(request, orbit, _generation);
+
     Color[]? Compute(RenderRequest request, ReferenceOrbit? orbit, int generation)
     {
         int width = request.Width;
@@ -160,17 +171,11 @@ public sealed class CpuFractalRenderer : IFractalBackend
         bool needsNormals = request.Coloring.NormalLighting;
         OrbitTrapMode orbitTrap = request.Coloring.OrbitTrap;
         bool useShaded = needsNormals || orbitTrap != OrbitTrapMode.None;
+        SsaaMode effectiveSsaa = request.EffectiveSsaa;
+        ReadOnlySpan<Vector2> offsets = SsaaPattern.GetOffsets(effectiveSsaa);
 
-        var orbitKey = new OrbitKey(
-            width,
-            height,
-            request.View,
-            request.Formula,
-            !useShaded && request.UseSimd && SimdMultibrot.IsSupported,
-            needsMinRadius,
-            needsNormals,
-            orbitTrap,
-            orbit);
+        Volatile.Write(ref _totalSsaaSamples, offsets.Length);
+        Volatile.Write(ref _completedSsaaSamples, 0);
 
         if (_mu == null || _mu.Length < count)
         {
@@ -190,17 +195,6 @@ public sealed class CpuFractalRenderer : IFractalBackend
         float[] mu = _mu;
         float[] minRadius = _minRadius!;
 
-        if (_cachedOrbitKey != orbitKey)
-        {
-            if (!EvaluateOrbits(request, orbit, generation, needsMinRadius, needsNormals, orbitTrap, mu, minRadius, _trapDist, _normalX, _normalY))
-            {
-                _cachedOrbitKey = null;
-                return null;
-            }
-
-            _cachedOrbitKey = orbitKey;
-        }
-
         Color[]? recycled;
         lock (_gate)
         {
@@ -216,17 +210,98 @@ public sealed class CpuFractalRenderer : IFractalBackend
         ReadOnlySpan<float> nxSpan = needsNormals && _normalX != null ? _normalX.AsSpan(0, count) : ReadOnlySpan<float>.Empty;
         ReadOnlySpan<float> nySpan = needsNormals && _normalY != null ? _normalY.AsSpan(0, count) : ReadOnlySpan<float>.Empty;
 
-        Palette.Map(
-            mu.AsSpan(0, count),
-            minRadius.AsSpan(0, count),
-            trapSpan,
-            nxSpan,
-            nySpan,
-            pixels.AsSpan(0, count),
-            request.Coloring,
-            request.Formula.MaxIterations,
-            width,
-            height);
+        if (offsets.Length <= 1)
+        {
+            var orbitKey = new OrbitKey(
+                width,
+                height,
+                request.View,
+                request.Formula,
+                !useShaded && request.UseSimd && SimdMultibrot.IsSupported,
+                needsMinRadius,
+                needsNormals,
+                orbitTrap,
+                orbit);
+
+            if (_cachedOrbitKey != orbitKey)
+            {
+                if (!EvaluateOrbits(request, orbit, generation, Vector2.Zero, needsMinRadius, needsNormals, orbitTrap, mu, minRadius, _trapDist, _normalX, _normalY))
+                {
+                    _cachedOrbitKey = null;
+                    return null;
+                }
+
+                _cachedOrbitKey = orbitKey;
+            }
+
+            Palette.Map(
+                mu.AsSpan(0, count),
+                minRadius.AsSpan(0, count),
+                trapSpan,
+                nxSpan,
+                nySpan,
+                pixels.AsSpan(0, count),
+                request.Coloring,
+                request.Formula.MaxIterations,
+                width,
+                height);
+
+            Volatile.Write(ref _completedSsaaSamples, 1);
+            return pixels;
+        }
+
+        // Supersampled final-frame path: evaluate rotated-grid subpixel passes and average RGB.
+        _cachedOrbitKey = null;
+        int rgbLength = count * 3;
+        if (_accumRgb == null || _accumRgb.Length < rgbLength)
+            _accumRgb = new int[rgbLength];
+        else
+            Array.Clear(_accumRgb, 0, rgbLength);
+
+        if (_passPixels == null || _passPixels.Length < count)
+            _passPixels = new Color[count];
+
+        int[] accum = _accumRgb;
+        Color[] passPixels = _passPixels;
+        int sampleCount = offsets.Length;
+
+        for (int s = 0; s < sampleCount; s++)
+        {
+            if (!EvaluateOrbits(request, orbit, generation, offsets[s], needsMinRadius, needsNormals, orbitTrap, mu, minRadius, _trapDist, _normalX, _normalY))
+                return null;
+
+            Palette.Map(
+                mu.AsSpan(0, count),
+                minRadius.AsSpan(0, count),
+                trapSpan,
+                nxSpan,
+                nySpan,
+                passPixels.AsSpan(0, count),
+                request.Coloring,
+                request.Formula.MaxIterations,
+                width,
+                height);
+
+            for (int i = 0, a = 0; i < count; i++, a += 3)
+            {
+                Color c = passPixels[i];
+                accum[a] += c.r;
+                accum[a + 1] += c.g;
+                accum[a + 2] += c.b;
+            }
+
+            Volatile.Write(ref _completedSsaaSamples, s + 1);
+        }
+
+        int half = sampleCount / 2;
+        for (int i = 0, a = 0; i < count; i++, a += 3)
+        {
+            pixels[i] = new Color(
+                (byte)((accum[a] + half) / sampleCount),
+                (byte)((accum[a + 1] + half) / sampleCount),
+                (byte)((accum[a + 2] + half) / sampleCount),
+                (byte)255);
+        }
 
         return pixels;
     }
@@ -235,6 +310,7 @@ public sealed class CpuFractalRenderer : IFractalBackend
         RenderRequest request,
         ReferenceOrbit? orbit,
         int generation,
+        Vector2 subpixelOffset,
         bool needsMinRadius,
         bool needsNormals,
         OrbitTrapMode orbitTrap,
@@ -260,12 +336,17 @@ public sealed class CpuFractalRenderer : IFractalBackend
             int prec = orbit!.PrecisionBits;
             refOffsetX = BigFloat.Sub(request.View.CenterXExact, orbit.RefRe, prec).ToFloatExp();
             refOffsetY = BigFloat.Sub(request.View.CenterYExact, orbit.RefIm, prec).ToFloatExp();
+            if (subpixelOffset != Vector2.Zero)
+            {
+                refOffsetX += halfWExact * (2.0 * subpixelOffset.X / width);
+                refOffsetY -= halfHExact * (2.0 * subpixelOffset.Y / height);
+            }
         }
 
         double halfH = request.View.Scale;
         double halfW = request.View.HalfWidth(width, height);
-        double originX = request.View.CenterX;
-        double originY = request.View.CenterY;
+        double originX = request.View.CenterX + (subpixelOffset.X / width) * 2.0 * halfW;
+        double originY = request.View.CenterY - (subpixelOffset.Y / height) * 2.0 * halfH;
         bool useSimd = !useShaded && request.UseSimd && SimdMultibrot.IsSupported;
 
         bool mirrorY = !usePerturbation

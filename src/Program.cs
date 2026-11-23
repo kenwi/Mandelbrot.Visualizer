@@ -3,6 +3,7 @@ using Mandelbrot.Visualizer.App;
 using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Diagnostics;
 using Mandelbrot.Visualizer.Features.Formula;
+using Mandelbrot.Visualizer.Features.Rendering;
 using Mandelbrot.Visualizer.Shared;
 
 if (args.Contains("--self-test"))
@@ -27,6 +28,7 @@ bool juliaPreview = false;
 double? previewCRe = null;
 double? previewCIm = null;
 bool matchZoom = false;
+SsaaMode ssaa = SsaaMode.Off;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -101,6 +103,10 @@ for (int i = 0; i < args.Length; i++)
         case "--match-zoom":
             matchZoom = true;
             break;
+        case "--ssaa" when i + 1 < args.Length:
+            if (SsaaPattern.TryParse(args[++i], out SsaaMode parsedSsaa))
+                ssaa = parsedSsaa;
+            break;
         case "--preview-c" when i + 1 < args.Length:
             string[] pparts = args[++i].Split(',', 2);
             if (pparts.Length == 2
@@ -130,7 +136,7 @@ if (centerArg != null)
     }
 }
 
-var options = new LaunchOptions(screenshot, centerX, centerY, scale, power, maxIter, forceCpu, normalLighting, orbitTrap, interior, cursorLight, lightX, lightY, lightAngle, fullscreen, family, juliaPreview, previewCRe, previewCIm, matchZoom);
+var options = new LaunchOptions(screenshot, centerX, centerY, scale, power, maxIter, forceCpu, normalLighting, orbitTrap, interior, cursorLight, lightX, lightY, lightAngle, fullscreen, family, juliaPreview, previewCRe, previewCIm, matchZoom, ssaa);
 using var host = new VisualizerHost(options);
 host.Run();
 return 0;

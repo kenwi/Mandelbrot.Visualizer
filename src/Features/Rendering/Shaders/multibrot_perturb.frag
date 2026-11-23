@@ -23,6 +23,7 @@ uniform int orbitTrap;
 uniform float density;
 uniform float phase;
 uniform int juliaSet;
+uniform vec2 subpixelOffset;
 uniform sampler2D paletteLut;
 uniform sampler2D refOrbit;
 
@@ -316,8 +317,8 @@ vec3 colorOf(bool escaped, float mu, float minR, float trapDist, vec2 normal2D, 
 
 void main()
 {
-    float px = gl_FragCoord.x;
-    float py = resolution.y - gl_FragCoord.y;
+    float px = gl_FragCoord.x + subpixelOffset.x;
+    float py = resolution.y - gl_FragCoord.y + subpixelOffset.y;
     float halfWMant = scaleMant * resolution.x / max(resolution.y, 1.0);
     vec2 pixFromCenter = vec2(
         (px / resolution.x - 0.5) * 2.0 * halfWMant,

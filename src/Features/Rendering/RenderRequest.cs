@@ -11,4 +11,8 @@ public readonly record struct RenderRequest(
     FormulaParams Formula,
     ColoringParams Coloring,
     bool UseSimd,
-    bool FinalQuality);
+    bool FinalQuality,
+    SsaaMode Ssaa = SsaaMode.Off)
+{
+    public SsaaMode EffectiveSsaa => FinalQuality ? Ssaa : SsaaMode.Off;
+}

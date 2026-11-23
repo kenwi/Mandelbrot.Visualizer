@@ -17,6 +17,7 @@ An interactive viewer for the Mandelbrot set and its relatives. Every pixel asks
 - Paint the interior solid or with a glow based on the smallest size the orbit reached.
 - Switch to a Julia set and type the constant `c`, or enable the optional **Julia preview** corner overlay (`P`) to preview the Julia set for the cursor's `c` live and jump straight into it with a click on the preview, right-click, or `Space` (optionally with **Match zoom** to keep the same zoom level for both preview and jump, and returning to your previous map view with a left-click or right-click on the canvas or by toggling `J`).
 - Draw with tiered GPU fragment shaders (native float32, double-float, and deep-zoom perturbation with progressive tiling and idle frame caching), or switch to the CPU backend with orbit caching for instant recoloring. Histogram coloring always uses the CPU.
+- Optional **2x / 4x SSAA** (`2x2` / `4x4` rotated-grid supersampling, hotkey `A` or `--ssaa`) on final frames and PNG captures across both GPU and CPU to eliminate sparkling moire noise on ultra-dense filaments while keeping interactive panning/zooming at 1x speed.
 - Optionally evaluate positive whole-number powers with AVX2 / AVX-512 SIMD (FMA + lane refilling) on the CPU.
 - Optionally show how long the newest image took to generate.
 - Save the current picture as a PNG under `captures/`, or render headlessly from the command line with `--screenshot`.
@@ -156,6 +157,7 @@ Supported CLI options:
 - `--julia-preview` - start with the corner live Julia preview enabled
 - `--match-zoom` - use the current map zoom level for both the Julia preview and one-click Julia jump
 - `--preview-c re,im` - pin the corner live Julia preview to a specific `c` (implies `--julia-preview`)
+- `--ssaa mode` - enable optional final-frame and capture supersampling (`off`, `2x`, `4x`)
 - `--screenshot path.png` - render a final-quality frame, save it (plus a `.window.png` capture), and exit
 
 Pictures saved interactively from the app go to `captures/`.
@@ -180,6 +182,7 @@ Pictures saved interactively from the app go to `captures/`.
 | Jump to Julia | Click the corner preview card, right-click the map, or press `Space` to jump directly into the hovered point's Julia set. Left-click (without dragging), right-click the Julia canvas, or press `J` to return to the original map view |
 | GPU shader | Checkbox or `G`. Histogram coloring stays on the CPU |
 | SIMD | Checkbox or `V`. Speeds positive whole-number powers on the CPU with AVX2 / AVX-512. Fractional powers stay on the scalar path |
+| SSAA | Combo box (`Off`, `2x (2x2)`, `4x (4x4)`) or `A` to cycle. Applies rotated-grid supersampling to final frames and PNG captures while keeping interactive motion at 1x |
 | Frame time | Checkbox. Shows how long the newest image took to generate |
 | Reset view | Button or `R` |
 | Hide the panel | `H` |

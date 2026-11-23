@@ -94,7 +94,7 @@ public sealed class SidePanel
         layout.Hint("Shift up/down zoom   double-click zoom");
         layout.Hint("hold [ ] power   - + iterations   C palette");
         layout.Hint("R reset  J julia  P preview  G gpu  V simd");
-        layout.Hint("F fractal  L 3d  M mouse light  T trap");
+        layout.Hint("F fractal  L 3d  M light  T trap  A ssaa");
         layout.Hint("RMB / Space julia jump  H panel  S save");
 
         return changed;

@@ -17,8 +17,9 @@ public sealed class CaptureFeature(string? screenshotPath)
     int _stableHeight = -1;
     int _stableFrames;
     string? _pendingExportPath;
+    string? _pendingInteractivePath;
 
-    public bool ForceFinalQuality => _screenshotPath != null;
+    public bool ForceFinalQuality => _screenshotPath != null || _pendingInteractivePath != null;
 
     public void StartClock() => _started = DateTime.UtcNow;
 
@@ -46,6 +47,24 @@ public sealed class CaptureFeature(string? screenshotPath)
     {
         Directory.CreateDirectory("captures");
         string path = Path.Combine("captures", $"multibrot-{DateTime.Now:yyyyMMdd-HHmmss}.png");
+        if (rendering.IsReadyForCapture(mode))
+        {
+            _pendingInteractivePath = null;
+            rendering.Save(path, mode);
+        }
+        else
+        {
+            _pendingInteractivePath = path;
+        }
+    }
+
+    public void FlushPendingInteractiveSave(RenderingFeature rendering, ColoringMode mode)
+    {
+        if (_pendingInteractivePath == null || !rendering.IsReadyForCapture(mode))
+            return;
+
+        string path = _pendingInteractivePath;
+        _pendingInteractivePath = null;
         rendering.Save(path, mode);
     }
 

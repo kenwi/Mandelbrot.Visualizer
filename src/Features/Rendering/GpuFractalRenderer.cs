@@ -25,12 +25,19 @@ public sealed class GpuFractalRenderer : IFractalBackend
     ShaderProgram _f32;
     ShaderProgram _df;
     PerturbProgram _perturb;
+    ResolveProgram _resolve;
 
     RenderTexture _target;
     bool _hasTarget;
     int _width;
     int _height;
     bool _disposed;
+
+    RenderTexture _ssaaAccum;
+    bool _hasSsaaAccum;
+    int _ssaaAccumWidth;
+    int _ssaaAccumHeight;
+    bool _ssaaAccumFailed;
 
     Texture _orbitTexture;
     bool _hasOrbitTexture;
@@ -42,14 +49,26 @@ public sealed class GpuFractalRenderer : IFractalBackend
     int _cachedHeight;
     int _nextTileIndex;
     int _totalTiles;
+    int _nextSampleIndex;
+    int _totalSamples = 1;
+    int _completedSamples;
     bool _tileComplete = true;
 
     public bool IsAvailable { get; private set; }
     public bool SupportsPerturbation => _perturb.IsReady;
     public bool HasImage { get; private set; }
     public bool IsRenderingTiles => !_tileComplete;
+    public int CompletedSsaaSamples => _completedSamples;
+    public int TotalSsaaSamples => _totalSamples;
     public bool HasFrameTime => _timer.HasFrameTime;
     public double LastFrameMs => _timer.LastFrameMs;
+
+    public bool IsReadyForFinalCapture(SsaaMode expectedSsaa)
+        => HasImage
+        && _tileComplete
+        && _cachedRequest is RenderRequest r
+        && r.FinalQuality
+        && r.Ssaa == expectedSsaa;
 
     public void Load()
     {
@@ -59,6 +78,7 @@ public sealed class GpuFractalRenderer : IFractalBackend
         string f32Source = LoadEmbeddedResource("Shaders.multibrot_f32.frag");
         string dfSource = LoadEmbeddedResource("Shaders.multibrot.frag");
         string perturbSource = LoadEmbeddedResource("Shaders.multibrot_perturb.frag");
+        string resolveSource = LoadEmbeddedResource("Shaders.ssaa_resolve.frag");
 
         if (!ShaderProgram.TryLoad(vertexSource, dfSource, out _df))
         {
@@ -73,6 +93,9 @@ public sealed class GpuFractalRenderer : IFractalBackend
         if (!PerturbProgram.TryLoad(vertexSource, perturbSource, out _perturb))
             Console.Error.WriteLine("Perturbation shader failed to compile; deep zoom will fall back.");
 
+        if (!ResolveProgram.TryLoad(vertexSource, resolveSource, out _resolve))
+            Console.Error.WriteLine("SSAA resolve shader failed to compile; GPU SSAA disabled.");
+
         _paletteLut.Load();
         IsAvailable = true;
     }
@@ -84,6 +107,12 @@ public sealed class GpuFractalRenderer : IFractalBackend
         _timer.Poll();
 
         bool usePerturb = referenceOrbit != null && request.View.IsDeepZoom && _perturb.IsReady;
+        SsaaMode effectiveSsaa = request.EffectiveSsaa;
+        bool useSsaa = effectiveSsaa != SsaaMode.Off && _resolve.IsReady && EnsureSsaaAccum(width, height);
+        ReadOnlySpan<Vector2> offsets = useSsaa
+            ? SsaaPattern.GetOffsets(effectiveSsaa)
+            : SsaaPattern.GetOffsets(SsaaMode.Off);
+
         bool requestChanged = !HasImage
             || _cachedWidth != width
             || _cachedHeight != height
@@ -104,67 +133,164 @@ public sealed class GpuFractalRenderer : IFractalBackend
                 int cols = (width + TileSize - 1) / TileSize;
                 int rows = (height + TileSize - 1) / TileSize;
                 _totalTiles = cols * rows;
-                _nextTileIndex = 0;
-                _tileComplete = false;
             }
             else
             {
                 _totalTiles = 1;
-                _nextTileIndex = 0;
-                _tileComplete = false;
             }
+
+            _nextTileIndex = 0;
+            _totalSamples = offsets.Length;
+            _nextSampleIndex = 0;
+            _completedSamples = 0;
+            _tileComplete = false;
         }
 
         if (!_tileComplete)
         {
-            if (usePerturb)
+            if (_totalSamples <= 1)
             {
-                EnsureOrbitTexture(referenceOrbit!);
-                RenderPassPerturb(width, height, request, referenceOrbit!);
+                if (usePerturb)
+                {
+                    EnsureOrbitTexture(referenceOrbit!);
+                    RenderPassPerturb(_target, width, height, request, referenceOrbit!, Vector2.Zero, additive: false, clearTarget: false);
+                }
+                else
+                {
+                    RenderPassDirect(_target, width, height, request, Vector2.Zero, additive: false, clearTarget: _nextTileIndex == 0 && _totalTiles == 1);
+                }
+
+                if (_nextTileIndex >= _totalTiles)
+                {
+                    _completedSamples = 1;
+                    _tileComplete = true;
+                }
+
+                HasImage = true;
             }
             else
             {
-                RenderPassDirect(width, height, request);
-            }
+                if (usePerturb)
+                    EnsureOrbitTexture(referenceOrbit!);
 
-            HasImage = true;
+                long frameStart = Stopwatch.GetTimestamp();
+                while (_nextSampleIndex < _totalSamples)
+                {
+                    Vector2 offset = offsets[_nextSampleIndex];
+                    bool clearAccum = _nextSampleIndex == 0 && _nextTileIndex == 0;
+                    if (usePerturb)
+                        RenderPassPerturb(_ssaaAccum, width, height, request, referenceOrbit!, offset, additive: true, clearTarget: clearAccum);
+                    else
+                        RenderPassDirect(_ssaaAccum, width, height, request, offset, additive: true, clearTarget: clearAccum);
+
+                    if (_nextTileIndex >= _totalTiles)
+                    {
+                        _nextSampleIndex++;
+                        _completedSamples = _nextSampleIndex;
+                        _nextTileIndex = 0;
+                    }
+
+                    if (Stopwatch.GetElapsedTime(frameStart).TotalMilliseconds >= TileFrameBudgetMs)
+                        break;
+                }
+
+                if (_completedSamples > 0)
+                {
+                    ResolveSsaaTarget(width, height, _completedSamples);
+                    HasImage = true;
+                }
+
+                if (_nextSampleIndex >= _totalSamples)
+                    _tileComplete = true;
+            }
         }
 
         var source = new Rectangle { x = 0, y = 0, width = width, height = -height };
         Raylib.DrawTextureRec(_target.texture, source, Vector2.Zero, new Color(255, 255, 255, 255));
     }
 
-    void RenderPassDirect(int width, int height, in RenderRequest request)
+    void RenderPassDirect(
+        RenderTexture target,
+        int width,
+        int height,
+        in RenderRequest request,
+        Vector2 subpixelOffset,
+        bool additive,
+        bool clearTarget)
     {
         ref readonly ShaderProgram program = ref SelectDirectProgram(request);
-        SetDirectUniforms(program, width, height, request);
-        bool timing = _nextTileIndex == 0 && _timer.Begin();
+        SetDirectUniforms(program, width, height, request, subpixelOffset);
+        bool timing = _nextSampleIndex == 0 && _nextTileIndex == 0 && _timer.Begin();
 
-        Raylib.BeginTextureMode(_target);
-        if (_nextTileIndex == 0 && _totalTiles == 1)
-            Raylib.ClearBackground(PanelTheme.CanvasBackground);
+        Raylib.BeginTextureMode(target);
+        if (clearTarget)
+            Raylib.ClearBackground(additive ? new Color(0, 0, 0, 0) : PanelTheme.CanvasBackground);
+
+        if (additive)
+        {
+            RlGl.rlSetBlendFactors(RlGl.RL_ONE, RlGl.RL_ONE, RlGl.RL_FUNC_ADD);
+            Raylib.BeginBlendMode(BlendMode.BLEND_CUSTOM);
+        }
 
         Raylib.BeginShaderMode(program.Shader);
         Raylib.SetShaderValueTexture(program.Shader, program.PaletteLutLoc, _paletteLut.Texture);
         DrawTilesOrFull(width, height);
         Raylib.EndShaderMode();
+
+        if (additive)
+            Raylib.EndBlendMode();
+
         Raylib.EndTextureMode();
         _timer.End(timing);
     }
 
-    void RenderPassPerturb(int width, int height, in RenderRequest request, ReferenceOrbit orbit)
+    void RenderPassPerturb(
+        RenderTexture target,
+        int width,
+        int height,
+        in RenderRequest request,
+        ReferenceOrbit orbit,
+        Vector2 subpixelOffset,
+        bool additive,
+        bool clearTarget)
     {
-        SetPerturbUniforms(width, height, request, orbit);
-        bool timing = _nextTileIndex == 0 && _timer.Begin();
+        SetPerturbUniforms(width, height, request, orbit, subpixelOffset);
+        bool timing = _nextSampleIndex == 0 && _nextTileIndex == 0 && _timer.Begin();
 
-        Raylib.BeginTextureMode(_target);
+        Raylib.BeginTextureMode(target);
+        if (clearTarget)
+            Raylib.ClearBackground(new Color(0, 0, 0, 0));
+
+        if (additive)
+        {
+            RlGl.rlSetBlendFactors(RlGl.RL_ONE, RlGl.RL_ONE, RlGl.RL_FUNC_ADD);
+            Raylib.BeginBlendMode(BlendMode.BLEND_CUSTOM);
+        }
+
         Raylib.BeginShaderMode(_perturb.Shader);
         Raylib.SetShaderValueTexture(_perturb.Shader, _perturb.PaletteLutLoc, _paletteLut.Texture);
         Raylib.SetShaderValueTexture(_perturb.Shader, _perturb.RefOrbitLoc, _orbitTexture);
         DrawTilesOrFull(width, height);
         Raylib.EndShaderMode();
+
+        if (additive)
+            Raylib.EndBlendMode();
+
         Raylib.EndTextureMode();
         _timer.End(timing);
+    }
+
+    void ResolveSsaaTarget(int width, int height, int sampleCount)
+    {
+        float invCount = 1f / Math.Max(sampleCount, 1);
+        _resolve.Set(_resolve.InvSampleCountLoc, invCount, ShaderUniformDataType.SHADER_UNIFORM_FLOAT);
+
+        Raylib.BeginTextureMode(_target);
+        Raylib.BeginShaderMode(_resolve.Shader);
+        var source = new Rectangle { x = 0, y = 0, width = width, height = -height };
+        Raylib.DrawTextureRec(_ssaaAccum.texture, source, Vector2.Zero, new Color(255, 255, 255, 255));
+        Raylib.EndShaderMode();
+        Raylib.EndTextureMode();
     }
 
     void DrawTilesOrFull(int width, int height)
@@ -172,7 +298,7 @@ public sealed class GpuFractalRenderer : IFractalBackend
         if (_totalTiles <= 1)
         {
             Raylib.DrawRectangle(0, 0, width, height, new Color(255, 255, 255, 255));
-            _tileComplete = true;
+            _nextTileIndex = _totalTiles;
             return;
         }
 
@@ -193,9 +319,6 @@ public sealed class GpuFractalRenderer : IFractalBackend
             if (drawn >= 4 && Stopwatch.GetElapsedTime(started).TotalMilliseconds >= TileFrameBudgetMs)
                 break;
         }
-
-        if (_nextTileIndex >= _totalTiles)
-            _tileComplete = true;
     }
 
     void EnsureOrbitTexture(ReferenceOrbit orbit)
@@ -259,7 +382,7 @@ public sealed class GpuFractalRenderer : IFractalBackend
             return false;
 
         ref readonly ShaderProgram program = ref SelectDirectProgram(request);
-        SetDirectUniforms(program, width, height, request);
+        SetDirectUniforms(program, width, height, request, Vector2.Zero);
 
         Raylib.BeginTextureMode(target);
         Raylib.ClearBackground(PanelTheme.CanvasBackground);
@@ -295,6 +418,8 @@ public sealed class GpuFractalRenderer : IFractalBackend
             _hasTarget = false;
         }
 
+        UnloadSsaaAccum();
+
         if (_hasOrbitTexture)
         {
             Raylib.UnloadTexture(_orbitTexture);
@@ -305,6 +430,7 @@ public sealed class GpuFractalRenderer : IFractalBackend
         _f32.Dispose();
         _df.Dispose();
         _perturb.Dispose();
+        _resolve.Dispose();
         _paletteLut.Dispose();
         _timer.Dispose();
         _cachedRequest = null;
@@ -334,7 +460,87 @@ public sealed class GpuFractalRenderer : IFractalBackend
         _cachedRequest = null;
     }
 
-    static void SetDirectUniforms(in ShaderProgram program, int width, int height, in RenderRequest request)
+    bool EnsureSsaaAccum(int width, int height)
+    {
+        if (_ssaaAccumFailed)
+            return false;
+
+        if (_hasSsaaAccum && _ssaaAccumWidth == width && _ssaaAccumHeight == height)
+            return true;
+
+        UnloadSsaaAccum();
+
+        if (TryCreateFloatTarget(width, height, PixelFormat.PIXELFORMAT_UNCOMPRESSED_R16G16B16A16, out _ssaaAccum)
+            || TryCreateFloatTarget(width, height, PixelFormat.PIXELFORMAT_UNCOMPRESSED_R32G32B32A32, out _ssaaAccum))
+        {
+            _ssaaAccumWidth = width;
+            _ssaaAccumHeight = height;
+            _hasSsaaAccum = true;
+            return true;
+        }
+
+        _ssaaAccumFailed = true;
+        return false;
+    }
+
+    void UnloadSsaaAccum()
+    {
+        if (!_hasSsaaAccum) return;
+        Raylib.UnloadRenderTexture(_ssaaAccum);
+        _hasSsaaAccum = false;
+        _ssaaAccumWidth = 0;
+        _ssaaAccumHeight = 0;
+    }
+
+    static unsafe bool TryCreateFloatTarget(int width, int height, PixelFormat format, out RenderTexture target)
+    {
+        target = default;
+        uint fboId = RlGl.rlLoadFramebuffer(width, height);
+        if (fboId == 0)
+            return false;
+
+        RlGl.rlEnableFramebuffer(fboId);
+        uint texId = RlGl.rlLoadTexture(null, width, height, (int)format, 1);
+        if (texId == 0)
+        {
+            RlGl.rlDisableFramebuffer();
+            RlGl.rlUnloadFramebuffer(fboId);
+            return false;
+        }
+
+        RlGl.rlFramebufferAttach(
+            fboId,
+            texId,
+            (int)rlFramebufferAttachType.RL_ATTACHMENT_COLOR_CHANNEL0,
+            (int)rlFramebufferAttachTextureType.RL_ATTACHMENT_TEXTURE2D,
+            0);
+
+        bool complete = RlGl.rlFramebufferComplete(fboId);
+        RlGl.rlDisableFramebuffer();
+        if (!complete)
+        {
+            RlGl.rlUnloadTexture(texId);
+            RlGl.rlUnloadFramebuffer(fboId);
+            return false;
+        }
+
+        target = new RenderTexture
+        {
+            id = fboId,
+            texture = new Texture
+            {
+                id = texId,
+                width = width,
+                height = height,
+                mipmaps = 1,
+                format = (int)format,
+            },
+        };
+        Raylib.SetTextureFilter(target.texture, TextureFilter.TEXTURE_FILTER_POINT);
+        return true;
+    }
+
+    static void SetDirectUniforms(in ShaderProgram program, int width, int height, in RenderRequest request, Vector2 subpixelOffset)
     {
         var resolution = new Vector2(width, height);
         Split(request.View.CenterX, out float reHi, out float reLo);
@@ -380,9 +586,10 @@ public sealed class GpuFractalRenderer : IFractalBackend
         program.Set(program.PhaseLoc, phase, ShaderUniformDataType.SHADER_UNIFORM_FLOAT);
         program.Set(program.JuliaLoc, julia, ShaderUniformDataType.SHADER_UNIFORM_INT);
         program.Set(program.FractalFamilyLoc, fractalFamily, ShaderUniformDataType.SHADER_UNIFORM_INT);
+        program.Set(program.SubpixelOffsetLoc, subpixelOffset, ShaderUniformDataType.SHADER_UNIFORM_VEC2);
     }
 
-    void SetPerturbUniforms(int width, int height, in RenderRequest request, ReferenceOrbit orbit)
+    void SetPerturbUniforms(int width, int height, in RenderRequest request, ReferenceOrbit orbit, Vector2 subpixelOffset)
     {
         int prec = orbit.PrecisionBits;
         FloatExp refOffX = BigFloat.Sub(request.View.CenterXExact, orbit.RefRe, prec).ToFloatExp();
@@ -431,6 +638,7 @@ public sealed class GpuFractalRenderer : IFractalBackend
         _perturb.Set(_perturb.DensityLoc, density, ShaderUniformDataType.SHADER_UNIFORM_FLOAT);
         _perturb.Set(_perturb.PhaseLoc, phase, ShaderUniformDataType.SHADER_UNIFORM_FLOAT);
         _perturb.Set(_perturb.JuliaLoc, julia, ShaderUniformDataType.SHADER_UNIFORM_INT);
+        _perturb.Set(_perturb.SubpixelOffsetLoc, subpixelOffset, ShaderUniformDataType.SHADER_UNIFORM_VEC2);
     }
 
     static void Split(double value, out float hi, out float lo)
@@ -471,6 +679,7 @@ public sealed class GpuFractalRenderer : IFractalBackend
         public int PhaseLoc;
         public int JuliaLoc;
         public int FractalFamilyLoc;
+        public int SubpixelOffsetLoc;
 
         public static bool TryLoad(string vertexSource, string fragmentSource, out ShaderProgram program)
         {
@@ -506,6 +715,7 @@ public sealed class GpuFractalRenderer : IFractalBackend
                 PhaseLoc = Raylib.GetShaderLocation(shader, "phase"),
                 JuliaLoc = Raylib.GetShaderLocation(shader, "juliaSet"),
                 FractalFamilyLoc = Raylib.GetShaderLocation(shader, "fractalFamily"),
+                SubpixelOffsetLoc = Raylib.GetShaderLocation(shader, "subpixelOffset"),
             };
             return true;
         }
@@ -550,6 +760,7 @@ public sealed class GpuFractalRenderer : IFractalBackend
         public int DensityLoc;
         public int PhaseLoc;
         public int JuliaLoc;
+        public int SubpixelOffsetLoc;
 
         public static bool TryLoad(string vertexSource, string fragmentSource, out PerturbProgram program)
         {
@@ -587,6 +798,46 @@ public sealed class GpuFractalRenderer : IFractalBackend
                 DensityLoc = Raylib.GetShaderLocation(shader, "density"),
                 PhaseLoc = Raylib.GetShaderLocation(shader, "phase"),
                 JuliaLoc = Raylib.GetShaderLocation(shader, "juliaSet"),
+                SubpixelOffsetLoc = Raylib.GetShaderLocation(shader, "subpixelOffset"),
+            };
+            return true;
+        }
+
+        public readonly void Set<T>(int location, T value, ShaderUniformDataType type) where T : unmanaged
+        {
+            if (location >= 0)
+                Raylib.SetShaderValue(Shader, location, value, type);
+        }
+
+        public void Dispose()
+        {
+            if (!IsReady) return;
+            Raylib.UnloadShader(Shader);
+            IsReady = false;
+        }
+    }
+
+    struct ResolveProgram
+    {
+        public Shader Shader;
+        public bool IsReady;
+        public int InvSampleCountLoc;
+
+        public static bool TryLoad(string vertexSource, string fragmentSource, out ResolveProgram program)
+        {
+            program = default;
+            Shader shader = Raylib.LoadShaderFromMemory(vertexSource, fragmentSource);
+            if (!Raylib.IsShaderReady(shader))
+            {
+                if (shader.id != 0) Raylib.UnloadShader(shader);
+                return false;
+            }
+
+            program = new ResolveProgram
+            {
+                Shader = shader,
+                IsReady = true,
+                InvSampleCountLoc = Raylib.GetShaderLocation(shader, "invSampleCount"),
             };
             return true;
         }

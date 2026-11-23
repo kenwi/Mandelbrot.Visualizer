@@ -28,6 +28,7 @@ uniform float density;
 uniform float phase;
 uniform int juliaSet;
 uniform int fractalFamily;
+uniform vec2 subpixelOffset;
 uniform sampler2D paletteLut;
 
 out vec4 finalColor;
@@ -419,8 +420,8 @@ vec3 colorOf(bool escaped, float mu, float minR, float trapDist, vec2 normal2D, 
 
 void main()
 {
-    float px = gl_FragCoord.x;
-    float py = resolution.y - gl_FragCoord.y;
+    float px = gl_FragCoord.x + subpixelOffset.x;
+    float py = resolution.y - gl_FragCoord.y + subpixelOffset.y;
     float halfH = scale;
     float halfW = scale * resolution.x / max(resolution.y, 1.0);
     vec2 pixelRe = dfAdd(vec2(center.x, center.y), vec2((px / resolution.x - 0.5) * 2.0 * halfW, 0.0));

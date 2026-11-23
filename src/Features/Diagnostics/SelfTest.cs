@@ -3,6 +3,7 @@ using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Formula;
 using Mandelbrot.Visualizer.Features.JuliaPreview;
 using Mandelbrot.Visualizer.Features.Navigation;
+using Mandelbrot.Visualizer.Features.Rendering;
 using Mandelbrot.Visualizer.Shared;
 using ZeroElectric.Vinculum;
 
@@ -40,6 +41,7 @@ public static class SelfTest
         ok &= Report(FractalFamiliesValid(out string familyMsg), familyMsg, familyMsg);
         ok &= Report(JuliaPreviewValid(out string previewMsg), previewMsg, previewMsg);
         ok &= Report(JuliaClickMatrixValid(out string matrixMsg), matrixMsg, matrixMsg);
+        ok &= Report(SsaaValid(out string ssaaMsg), ssaaMsg, ssaaMsg);
 
         Console.WriteLine(ok ? "self-test passed" : "self-test failed");
         return ok;
@@ -1029,5 +1031,130 @@ public static class SelfTest
 
         message = $"Julia jump/return click matrix passed across {scenariosRun} option & action combinations";
         return true;
+    }
+
+    static bool SsaaValid(out string message)
+    {
+        // 1. Validate RGSS sample counts, strict (-0.5, +0.5) bounds, zero mean, and N-rooks stratification.
+        foreach (SsaaMode mode in new[] { SsaaMode.Off, SsaaMode.X2, SsaaMode.X4 })
+        {
+            ReadOnlySpan<Vector2> offsets = SsaaPattern.GetOffsets(mode);
+            int expected = SsaaPattern.SampleCount(mode);
+            if (offsets.Length != expected)
+            {
+                message = $"SsaaPattern.{mode} sample count {offsets.Length} != {expected}";
+                return false;
+            }
+
+            double sumX = 0;
+            double sumY = 0;
+            var xBins = new bool[expected];
+            var yBins = new bool[expected];
+            for (int i = 0; i < expected; i++)
+            {
+                Vector2 o = offsets[i];
+                if (MathF.Abs(o.X) >= 0.5f || MathF.Abs(o.Y) >= 0.5f)
+                {
+                    message = $"SsaaPattern.{mode} sample {i} out of pixel bounds: {o}";
+                    return false;
+                }
+
+                sumX += o.X;
+                sumY += o.Y;
+                int bx = (int)MathF.Floor((o.X + 0.5f) * expected);
+                int by = (int)MathF.Floor((o.Y + 0.5f) * expected);
+                xBins[Math.Clamp(bx, 0, expected - 1)] = true;
+                yBins[Math.Clamp(by, 0, expected - 1)] = true;
+            }
+
+            if (Math.Abs(sumX) > 1e-5 || Math.Abs(sumY) > 1e-5)
+            {
+                message = $"SsaaPattern.{mode} has non-zero centroid ({sumX}, {sumY})";
+                return false;
+            }
+
+            if (expected > 1 && (!xBins.All(b => b) || !yBins.All(b => b)))
+            {
+                message = $"SsaaPattern.{mode} violates N-rooks stratification";
+                return false;
+            }
+        }
+
+        if (!SsaaPattern.TryParse("off", out SsaaMode p0) || p0 != SsaaMode.Off
+            || !SsaaPattern.TryParse("2x", out SsaaMode p2) || p2 != SsaaMode.X2
+            || !SsaaPattern.TryParse("4x", out SsaaMode p4) || p4 != SsaaMode.X4
+            || SsaaPattern.TryParse("8x", out _))
+        {
+            message = "SsaaPattern.TryParse failed";
+            return false;
+        }
+
+        // 2. Verify SSAA is active only on final-quality frames.
+        var view = new ViewportState(BigFloat.FromDouble(-0.743643887), BigFloat.FromDouble(0.131825904), FloatExp.FromDouble(0.002));
+        var formula = new FormulaParams(2, 600, false, 0, 0);
+        var coloring = ColoringParams.Default with { Density = 3.5 };
+        var previewReq = new RenderRequest(48, 48, view, formula, coloring, UseSimd: true, FinalQuality: false, Ssaa: SsaaMode.X4);
+        var req1x = new RenderRequest(48, 48, view, formula, coloring, UseSimd: true, FinalQuality: true, Ssaa: SsaaMode.Off);
+        var req2x = req1x with { Ssaa = SsaaMode.X2 };
+        var req4x = req1x with { Ssaa = SsaaMode.X4 };
+
+        if (previewReq.EffectiveSsaa != SsaaMode.Off || req2x.EffectiveSsaa != SsaaMode.X2 || req4x.EffectiveSsaa != SsaaMode.X4)
+        {
+            message = "RenderRequest.EffectiveSsaa should apply only on final-quality frames";
+            return false;
+        }
+
+        // 3. Verify CPU 2x/4x SSAA reduces high-frequency spatial moire/sparkle energy on a dense Seahorse Valley filament patch
+        //    while preserving solid interior color identically.
+        using var cpu = new CpuFractalRenderer();
+        Color[]? img1x = cpu.ComputeHeadless(req1x);
+        Color[]? img2x = cpu.ComputeHeadless(req2x);
+        Color[]? img4x = cpu.ComputeHeadless(req4x);
+        if (img1x == null || img2x == null || img4x == null)
+        {
+            message = "CpuFractalRenderer headless SSAA render returned null";
+            return false;
+        }
+
+        double hf1 = NeighborEnergy(img1x, 48, 48);
+        double hf2 = NeighborEnergy(img2x, 48, 48);
+        double hf4 = NeighborEnergy(img4x, 48, 48);
+        if (!(hf2 < hf1 && hf4 <= hf2 * 1.02))
+        {
+            message = $"SSAA did not reduce high-frequency filament noise as expected (1x={hf1:0.0}, 2x={hf2:0.0}, 4x={hf4:0.0})";
+            return false;
+        }
+
+        var solidView = new ViewportState(BigFloat.Zero, BigFloat.Zero, FloatExp.FromDouble(0.1));
+        Color[]? solid1 = cpu.ComputeHeadless(new RenderRequest(16, 16, solidView, formula, ColoringParams.Default, true, true, SsaaMode.Off));
+        Color[]? solid4 = cpu.ComputeHeadless(new RenderRequest(16, 16, solidView, formula, ColoringParams.Default, true, true, SsaaMode.X4));
+        if (solid1 == null || solid4 == null || solid1[0].r != solid4[0].r || solid1[0].g != solid4[0].g || solid1[0].b != solid4[0].b)
+        {
+            message = "SSAA altered uniform solid interior color";
+            return false;
+        }
+
+        message = $"2x/4x RGSS SSAA valid (dense filament HF energy 1x={hf1:0.0} -> 2x={hf2:0.0} -> 4x={hf4:0.0})";
+        return true;
+    }
+
+    static double NeighborEnergy(Color[] pixels, int width, int height)
+    {
+        double sum = 0;
+        int pairs = 0;
+        for (int y = 0; y < height - 1; y++)
+        {
+            for (int x = 0; x < width - 1; x++)
+            {
+                Color c = pixels[y * width + x];
+                Color r = pixels[y * width + x + 1];
+                Color d = pixels[(y + 1) * width + x];
+                sum += Math.Abs(c.r - r.r) + Math.Abs(c.g - r.g) + Math.Abs(c.b - r.b);
+                sum += Math.Abs(c.r - d.r) + Math.Abs(c.g - d.g) + Math.Abs(c.b - d.b);
+                pairs += 2;
+            }
+        }
+
+        return sum / Math.Max(pairs, 1);
     }
 }

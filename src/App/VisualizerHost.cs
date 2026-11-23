@@ -30,7 +30,8 @@ public sealed record LaunchOptions(
     bool JuliaPreview = false,
     double? PreviewCRe = null,
     double? PreviewCIm = null,
-    bool MatchZoom = false);
+    bool MatchZoom = false,
+    SsaaMode Ssaa = SsaaMode.Off);
 
 /// <summary>
 /// Thin application shell owning the Raylib window lifecycle and frame loop,
@@ -58,6 +59,9 @@ public sealed class VisualizerHost : IDisposable
         _capture = new CaptureFeature(options.ScreenshotPath);
         if (options.ForceCpu)
             _rendering.SetUseGpu(false);
+
+        if (options.Ssaa != SsaaMode.Off)
+            _rendering.SetSsaa(options.Ssaa);
 
         if (options.JuliaPreview || (options.PreviewCRe.HasValue && options.PreviewCIm.HasValue))
             _juliaPreview.Enabled = true;
@@ -175,6 +179,8 @@ public sealed class VisualizerHost : IDisposable
             dirty |= _formula.SyncAutoIterations(_navigation.State.ScaleExact);
             _capture.CaptureWindowIfReady(_rendering, _coloring.State.Mode);
             Raylib.EndDrawing();
+
+            _capture.FlushPendingInteractiveSave(_rendering, _coloring.State.Mode);
 
             _rendering.SubmitIfNeeded(
                 canvasWidth,

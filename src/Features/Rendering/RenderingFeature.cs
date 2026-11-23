@@ -27,9 +27,11 @@ public sealed class RenderingFeature : IDisposable
 
     public bool UseGpu { get; private set; } = true;
     public bool UseSimd { get; private set; }
+    public SsaaMode Ssaa { get; private set; } = SsaaMode.Off;
     public ReferenceOrbit? ActiveOrbit => _submittedOrbit;
 
     public void SetUseGpu(bool value) => UseGpu = value;
+    public void SetSsaa(SsaaMode mode) => Ssaa = mode;
 
     public void Load() => _gpu.Load();
 
@@ -67,6 +69,12 @@ public sealed class RenderingFeature : IDisposable
             changed = true;
         }
 
+        if (Raylib.IsKeyPressed(KeyboardKey.KEY_A))
+        {
+            Ssaa = (SsaaMode)(((int)Ssaa + 1) % SsaaPattern.ModeCount);
+            changed = true;
+        }
+
         return changed;
     }
 
@@ -75,16 +83,18 @@ public sealed class RenderingFeature : IDisposable
         bool changed = false;
 
         bool gpu = UseGpu;
-        if (layout.Check("GPU shader", ref gpu))
+        bool simd = UseSimd;
+        if (layout.TwoChecks("GPU shader", ref gpu, "SIMD", ref simd, splitRatio: 0.56f))
         {
             UseGpu = gpu;
+            UseSimd = simd;
             changed = true;
         }
 
-        bool simd = UseSimd;
-        if (layout.Check("SIMD", ref simd))
+        int ssaa = (int)Ssaa;
+        if (layout.LabeledCombo("SSAA", SsaaPattern.ComboItems, ref ssaa))
         {
-            UseSimd = simd;
+            Ssaa = (SsaaMode)ssaa;
             changed = true;
         }
 
@@ -133,7 +143,7 @@ public sealed class RenderingFeature : IDisposable
             }
 
             _submittedOrbit = orbit;
-            var request = new RenderRequest(canvasWidth, canvasHeight, view, formula, coloring, false, finalQuality);
+            var request = new RenderRequest(canvasWidth, canvasHeight, view, formula, coloring, false, finalQuality, Ssaa);
             _gpu.Draw(canvasWidth, canvasHeight, request, orbit);
             _lastDrawnOnGpu = _gpu.HasImage;
             _holdGpuUntilCpuReady = false;
@@ -143,7 +153,8 @@ public sealed class RenderingFeature : IDisposable
             if (_lastDrawnOnGpu)
             {
                 _lastDrawnOnGpu = false;
-                _holdGpuUntilCpuReady = _gpu.HasImage && !_cpu.MatchesUploadedScene(view, formula, coloring);
+                SsaaMode effectiveSsaa = finalQuality ? Ssaa : SsaaMode.Off;
+                _holdGpuUntilCpuReady = _gpu.HasImage && !_cpu.MatchesUploadedScene(view, formula, coloring, effectiveSsaa);
             }
 
             if (_holdGpuUntilCpuReady && _gpu.HasImage)
@@ -186,7 +197,7 @@ public sealed class RenderingFeature : IDisposable
         if (!dirty && !sizeChanged)
             return;
 
-        var request = new RenderRequest(width, height, view, formula, coloring, UseSimd, finalQuality);
+        var request = new RenderRequest(width, height, view, formula, coloring, UseSimd, finalQuality, Ssaa);
         if (_hasSubmitted && request == _submitted && ReferenceEquals(_submittedOrbit, orbit))
             return;
 
@@ -210,9 +221,14 @@ public sealed class RenderingFeature : IDisposable
             return false;
 
         if (UsingGpu(mode))
-            return _gpu.HasImage && !_gpu.IsRenderingTiles;
+            return _gpu.IsReadyForFinalCapture(Ssaa);
 
-        return _hasSubmitted && _submitted.FinalQuality && _cpu.HasImage && !_cpu.IsBusy;
+        return _hasSubmitted
+            && _submitted.FinalQuality
+            && _submitted.Ssaa == Ssaa
+            && _cpu.HasImage
+            && !_cpu.IsBusy
+            && !_holdGpuUntilCpuReady;
     }
 
     public void Save(string path, ColoringMode mode)
@@ -238,6 +254,7 @@ public sealed class RenderingFeature : IDisposable
     public string StatusLine(ColoringMode mode)
     {
         int fps = Raylib.GetFPS();
+        string ssaaTag = Ssaa != SsaaMode.Off ? $" {SsaaPattern.ShortLabel(Ssaa)}" : string.Empty;
         if (_orbitCache.IsComputing)
             return "Computing reference orbit...";
         if (_lastPrecisionLimit)
@@ -247,8 +264,13 @@ public sealed class RenderingFeature : IDisposable
         if (UsingGpu(mode))
         {
             if (_gpu.IsRenderingTiles)
+            {
+                if (_gpu.TotalSsaaSamples > 1)
+                    return $"GPU{ssaaTag} SSAA ({_gpu.CompletedSsaaSamples}/{_gpu.TotalSsaaSamples})...";
                 return _lastDeepPerturbation ? "GPU deep tiling..." : "GPU tiling...";
-            return _lastDeepPerturbation ? $"GPU deep    {fps} fps" : $"GPU    {fps} fps";
+            }
+
+            return _lastDeepPerturbation ? $"GPU deep{ssaaTag}    {fps} fps" : $"GPU{ssaaTag}    {fps} fps";
         }
 
         if (UseSimd && !SimdMultibrot.IsSupported)
@@ -256,11 +278,16 @@ public sealed class RenderingFeature : IDisposable
 
         bool simd = UsingSimd();
         string name = _lastDeepPerturbation ? "CPU deep" : simd ? "CPU SIMD" : "CPU";
-        if (UseGpu && mode == ColoringMode.Histogram)
-            return $"{(simd ? "SIMD" : "CPU")} histogram    {fps} fps";
         if (_cpu.IsBusy)
+        {
+            if (_cpu.TotalSsaaSamples > 1)
+                return $"{name}{ssaaTag} SSAA ({_cpu.CompletedSsaaSamples}/{_cpu.TotalSsaaSamples})...";
             return _lastDeepPerturbation ? "CPU deep rendering..." : simd ? "SIMD rendering..." : "CPU rendering...";
-        return $"{name}    {fps} fps";
+        }
+
+        if (UseGpu && mode == ColoringMode.Histogram)
+            return $"{(simd ? "SIMD" : "CPU")} histogram{ssaaTag}    {fps} fps";
+        return $"{name}{ssaaTag}    {fps} fps";
     }
 
     public void Dispose()
