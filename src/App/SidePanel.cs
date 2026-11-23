@@ -2,6 +2,7 @@ using Mandelbrot.Visualizer.Features.Capture;
 using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Diagnostics;
 using Mandelbrot.Visualizer.Features.Formula;
+using Mandelbrot.Visualizer.Features.JuliaPreview;
 using Mandelbrot.Visualizer.Features.Navigation;
 using Mandelbrot.Visualizer.Features.Rendering;
 using Mandelbrot.Visualizer.Shared;
@@ -30,7 +31,8 @@ public sealed class SidePanel
         ColoringFeature coloring,
         RenderingFeature rendering,
         CaptureFeature capture,
-        DiagnosticsFeature diagnostics)
+        DiagnosticsFeature diagnostics,
+        JuliaPreviewFeature juliaPreview)
     {
         if (!Visible)
             return false;
@@ -51,19 +53,30 @@ public sealed class SidePanel
 
         changed |= formula.DrawPowerAndIterations(ref layout, EditScope, out bool familyChanged);
         changed |= coloring.DrawPanel(ref layout);
+        bool wasJulia = formula.State.Julia;
         changed |= formula.DrawJuliaControls(ref layout, EditScope, out bool juliaToggled);
-        if (familyChanged || juliaToggled)
+        changed |= juliaPreview.DrawToggle(ref layout, out bool matchZoomChanged);
+        if (familyChanged)
         {
-            formula.State.GetDefaultView(out double cx, out double cy, out double scale);
-            navigation.ResetTo(cx, cy, scale);
+            EditScope.CancelAll();
+            juliaPreview.OnFamilyChanged(navigation, formula);
             changed = true;
         }
+        else if (juliaToggled)
+        {
+            EditScope.CancelAll();
+            juliaPreview.OnJuliaToggled(navigation, formula, wasJulia);
+            changed = true;
+        }
+
+        if (matchZoomChanged)
+            juliaPreview.OnMatchZoomToggled(navigation, formula.State);
 
         layout.TwoButtons("Reset view", "Save PNG", out bool resetView, out bool saveImage);
         if (resetView)
         {
-            formula.State.GetDefaultView(out double cx, out double cy, out double scale);
-            navigation.ResetTo(cx, cy, scale);
+            EditScope.CancelAll();
+            juliaPreview.OnResetView(navigation, formula);
             changed = true;
         }
 
@@ -80,9 +93,9 @@ public sealed class SidePanel
         layout.Hint("Drag or arrows pan   wheel zoom");
         layout.Hint("Shift up/down zoom   double-click zoom");
         layout.Hint("hold [ ] power   - + iterations   C palette");
-        layout.Hint("R reset   J julia   G gpu   V simd");
-        layout.Hint("F fractal   L 3d   M mouse light   T trap");
-        layout.Hint("H panel   S save");
+        layout.Hint("R reset  J julia  P preview  G gpu  V simd");
+        layout.Hint("F fractal  L 3d  M mouse light  T trap");
+        layout.Hint("RMB / Space julia jump  H panel  S save");
 
         return changed;
     }

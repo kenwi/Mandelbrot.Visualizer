@@ -23,6 +23,10 @@ bool fullscreen = false;
 OrbitTrapMode orbitTrap = OrbitTrapMode.None;
 InteriorStyle? interior = null;
 FractalFamily? family = null;
+bool juliaPreview = false;
+double? previewCRe = null;
+double? previewCIm = null;
+bool matchZoom = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -91,6 +95,23 @@ for (int i = 0; i < args.Length; i++)
             if (Enum.TryParse<FractalFamily>(args[++i], true, out FractalFamily parsedFamily))
                 family = parsedFamily;
             break;
+        case "--julia-preview":
+            juliaPreview = true;
+            break;
+        case "--match-zoom":
+            matchZoom = true;
+            break;
+        case "--preview-c" when i + 1 < args.Length:
+            string[] pparts = args[++i].Split(',', 2);
+            if (pparts.Length == 2
+                && double.TryParse(pparts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double pre)
+                && double.TryParse(pparts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double pim))
+            {
+                juliaPreview = true;
+                previewCRe = pre;
+                previewCIm = pim;
+            }
+            break;
     }
 }
 
@@ -109,7 +130,7 @@ if (centerArg != null)
     }
 }
 
-var options = new LaunchOptions(screenshot, centerX, centerY, scale, power, maxIter, forceCpu, normalLighting, orbitTrap, interior, cursorLight, lightX, lightY, lightAngle, fullscreen, family);
+var options = new LaunchOptions(screenshot, centerX, centerY, scale, power, maxIter, forceCpu, normalLighting, orbitTrap, interior, cursorLight, lightX, lightY, lightAngle, fullscreen, family, juliaPreview, previewCRe, previewCIm, matchZoom);
 using var host = new VisualizerHost(options);
 host.Run();
 return 0;

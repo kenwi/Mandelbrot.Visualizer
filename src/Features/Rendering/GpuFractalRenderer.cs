@@ -253,6 +253,24 @@ public sealed class GpuFractalRenderer : IFractalBackend
         Raylib.DrawTexturePro(_target.texture, source, dest, Vector2.Zero, 0, new Color(255, 255, 255, 255));
     }
 
+    public bool RenderOffscreen(RenderTexture target, int width, int height, in RenderRequest request)
+    {
+        if (!IsAvailable || width < 1 || height < 1)
+            return false;
+
+        ref readonly ShaderProgram program = ref SelectDirectProgram(request);
+        SetDirectUniforms(program, width, height, request);
+
+        Raylib.BeginTextureMode(target);
+        Raylib.ClearBackground(PanelTheme.CanvasBackground);
+        Raylib.BeginShaderMode(program.Shader);
+        Raylib.SetShaderValueTexture(program.Shader, program.PaletteLutLoc, _paletteLut.Texture);
+        Raylib.DrawRectangle(0, 0, width, height, new Color(255, 255, 255, 255));
+        Raylib.EndShaderMode();
+        Raylib.EndTextureMode();
+        return true;
+    }
+
     public void Save(string path)
     {
         if (!HasImage) return;

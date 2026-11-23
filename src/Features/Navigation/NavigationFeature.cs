@@ -23,19 +23,25 @@ public sealed class NavigationFeature
 
     public void Touch() => _interactUntil = DateTime.UtcNow.AddMilliseconds(180);
 
+    public void CancelPointerInteraction()
+    {
+        _dragging = false;
+        _lastClickTime = -1;
+    }
+
     public void ResetTo(double centerX, double centerY, double scale)
         => _view.ResetTo(centerX, centerY, scale);
 
     public void SetExact(BigFloat centerX, BigFloat centerY, FloatExp scale)
         => _view.SetExact(centerX, centerY, scale);
 
-    public bool HandlePointer(int canvasWidth, int canvasHeight, bool panelVisible)
+    public bool HandlePointer(int canvasWidth, int canvasHeight, bool panelVisible, bool pointerCaptured = false)
     {
         Vector2 mouse = Raylib.GetMousePosition();
-        bool onCanvas = !panelVisible || mouse.X < canvasWidth;
+        bool onCanvas = !pointerCaptured && (!panelVisible || mouse.X < canvasWidth);
         bool changed = false;
 
-        if (Raylib.IsMouseButtonPressed(MouseButton.MOUSE_BUTTON_LEFT) && onCanvas)
+        if (MouseClickLatch.IsPressed(MouseButton.MOUSE_BUTTON_LEFT) && onCanvas)
         {
             double now = Raylib.GetTime();
             if (now - _lastClickTime < 0.3)
@@ -50,7 +56,7 @@ public sealed class NavigationFeature
             _dragging = true;
         }
 
-        if (Raylib.IsMouseButtonReleased(MouseButton.MOUSE_BUTTON_LEFT))
+        if (MouseClickLatch.IsReleased(MouseButton.MOUSE_BUTTON_LEFT) || pointerCaptured)
             _dragging = false;
 
         if (_dragging && onCanvas)
@@ -179,6 +185,19 @@ public sealed class NavigationFeature
 
         pixelX = (int)mouse.X;
         pixelY = (int)mouse.Y;
+        return true;
+    }
+
+    public bool TryGetHoveredComplex(int canvasWidth, int canvasHeight, out double re, out double im)
+    {
+        if (!TryGetHoveredPixel(canvasWidth, canvasHeight, out int px, out int py))
+        {
+            re = 0;
+            im = 0;
+            return false;
+        }
+
+        _view.ScreenToComplex(px + 0.5, py + 0.5, canvasWidth, canvasHeight, out re, out im);
         return true;
     }
 

@@ -15,7 +15,7 @@ An interactive viewer for the Mandelbrot set and its relatives. Every pixel asks
 - Optional **3D lighting** (directional normal-map shading with a 360-degree angle slider, or **Mouse light** mode using the cursor as a live floating point light) and optional **Orbit traps** (`Point`, `Cross`, `Circle`, `Square`), working across both GPU shaders (including deep-zoom perturbation) and CPU.
 - Eight palettes shared directly between CPU and GPU via a baked LUT: Classic, Fire, Electric, Ocean, Sunset, Ice, Grayscale, Rainbow.
 - Paint the interior solid or with a glow based on the smallest size the orbit reached.
-- Switch to a Julia set and type the constant `c`.
+- Switch to a Julia set and type the constant `c`, or enable the optional **Julia preview** corner overlay (`P`) to preview the Julia set for the cursor's `c` live and jump straight into it with a click on the preview, right-click, or `Space` (optionally with **Match zoom** to keep the same zoom level for both preview and jump, and returning to your previous map view with a left-click or right-click on the canvas or by toggling `J`).
 - Draw with tiered GPU fragment shaders (native float32, double-float, and deep-zoom perturbation with progressive tiling and idle frame caching), or switch to the CPU backend with orbit caching for instant recoloring. Histogram coloring always uses the CPU.
 - Optionally evaluate positive whole-number powers with AVX2 / AVX-512 SIMD (FMA + lane refilling) on the CPU.
 - Optionally show how long the newest image took to generate.
@@ -153,6 +153,9 @@ Supported CLI options:
 - `--light x,y` - fix the point light at normalized canvas coordinates (implies `--mouse-light`)
 - `--trap mode` - enable an orbit trap (`none`, `point`, `cross`, `circle`, `square`)
 - `--interior style` - set interior style (`black`, `glow`)
+- `--julia-preview` - start with the corner live Julia preview enabled
+- `--match-zoom` - use the current map zoom level for both the Julia preview and one-click Julia jump
+- `--preview-c re,im` - pin the corner live Julia preview to a specific `c` (implies `--julia-preview`)
 - `--screenshot path.png` - render a final-quality frame, save it (plus a `.window.png` capture), and exit
 
 Pictures saved interactively from the app go to `captures/`.
@@ -171,7 +174,10 @@ Pictures saved interactively from the app go to `captures/`.
 | Orbit trap | Combo box (`None`, `Point`, `Cross`, `Circle`, `Square`), or `T` to cycle |
 | 3D lighting | Checkbox or `L`, with a 360-degree `Angle` slider |
 | Mouse light | Checkbox or `M`. Uses the mouse cursor as a floating 3D point light |
-| Julia set | Checkbox or `J`. `Re c` and `Im c` edit the constant |
+| Julia set | Checkbox or `J`. `Re c` and `Im c` edit the constant. Toggling `J` off after a preview jump restores your previous map viewport |
+| Julia preview | Checkbox or `P` (optional). Shows a live corner preview of the Julia set for the hovered `c` on the parameter map |
+| Match zoom | Checkbox beside `Julia preview`. Uses the current map zoom level for both the Julia preview and one-click Julia jump |
+| Jump to Julia | Click the corner preview card, right-click the map, or press `Space` to jump directly into the hovered point's Julia set. Left-click (without dragging), right-click the Julia canvas, or press `J` to return to the original map view |
 | GPU shader | Checkbox or `G`. Histogram coloring stays on the CPU |
 | SIMD | Checkbox or `V`. Speeds positive whole-number powers on the CPU with AVX2 / AVX-512. Fractional powers stay on the scalar path |
 | Frame time | Checkbox. Shows how long the newest image took to generate |
@@ -190,6 +196,7 @@ The codebase is organized as vertical feature slices under `src/`:
 - `src/Features/Coloring/` - palettes, smooth/histogram mapping, and GPU `PaletteLut` texture
 - `src/Features/Navigation/` - arbitrary-precision `FractalView` camera, input handling, and coordinate telemetry
 - `src/Features/Rendering/` - GPU tiered/tiled shaders (`multibrot_f32.frag`, `multibrot.frag`, `multibrot_perturb.frag`), CPU cached renderer, and backend dispatch
+- `src/Features/JuliaPreview/` - optional live corner Julia preview overlay, cached GPU/CPU thumbnail rendering, one-click / hotkey jump, and return-view memory
 - `src/Features/Capture/` - interactive PNG saving and CLI `--screenshot` automation
 - `src/Features/Diagnostics/` - cursor orbit probing, frame-time readout, HUD, and `--self-test`
 - `src/Shared/` - feature-agnostic `BigFloat`, `FloatExp`/`ComplexExp`, and RayGui panel helpers

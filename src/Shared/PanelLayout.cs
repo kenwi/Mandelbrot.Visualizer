@@ -50,6 +50,31 @@ public struct PanelLayout(float x, float y, float width)
         return value != before;
     }
 
+    public bool TwoChecks(string leftLabel, ref bool leftValue, string rightLabel, ref bool rightValue, float splitRatio = 0.53f)
+    {
+        bool leftBefore = leftValue;
+        bool rightBefore = rightValue;
+
+        float leftWidth = Width * splitRatio;
+        float rightX = X + leftWidth + 6;
+        float rightWidth = Width - leftWidth - 6;
+
+        var leftBox = new Rectangle { x = X, y = Y, width = 22, height = 22 };
+        RayGui.GuiCheckBox(leftBox, "", ref leftValue);
+        if (leftValue)
+            Raylib.DrawRectangle((int)X + 5, (int)Y + 5, 12, 12, PanelTheme.CheckFill);
+        RayGui.GuiLabel(new Rectangle { x = X + 28, y = Y, width = leftWidth - 28, height = 22 }, leftLabel);
+
+        var rightBox = new Rectangle { x = rightX, y = Y, width = 22, height = 22 };
+        RayGui.GuiCheckBox(rightBox, "", ref rightValue);
+        if (rightValue)
+            Raylib.DrawRectangle((int)rightX + 5, (int)Y + 5, 12, 12, PanelTheme.CheckFill);
+        RayGui.GuiLabel(new Rectangle { x = rightX + 28, y = Y, width = rightWidth - 28, height = 22 }, rightLabel);
+
+        Y += 28;
+        return leftValue != leftBefore || rightValue != rightBefore;
+    }
+
     public bool Combo(string items, ref int selected)
     {
         int before = selected;

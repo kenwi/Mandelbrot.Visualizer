@@ -26,6 +26,24 @@ public sealed class FormulaFeature
         _juliaImField.Invalidate();
     }
 
+    public void JumpToJulia(double re, double im)
+    {
+        State = State with
+        {
+            Julia = true,
+            JuliaRe = re,
+            JuliaIm = im,
+        };
+        _juliaReField.Invalidate();
+        _juliaImField.Invalidate();
+    }
+
+    public void ExitJulia()
+    {
+        if (!State.Julia) return;
+        State = State with { Julia = false };
+    }
+
     public bool SyncAutoIterations(FloatExp scale)
     {
         if (!AutoIterations) return false;

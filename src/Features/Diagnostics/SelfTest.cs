@@ -1,6 +1,10 @@
+using System.Numerics;
 using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Formula;
+using Mandelbrot.Visualizer.Features.JuliaPreview;
+using Mandelbrot.Visualizer.Features.Navigation;
 using Mandelbrot.Visualizer.Shared;
+using ZeroElectric.Vinculum;
 
 namespace Mandelbrot.Visualizer.Features.Diagnostics;
 
@@ -34,6 +38,8 @@ public static class SelfTest
         ok &= Report(CursorProbeMatchesFormula(out string probeMsg), probeMsg, probeMsg);
         ok &= Report(ShadedLightingAndOrbitTrapValid(out string shadedMsg), shadedMsg, shadedMsg);
         ok &= Report(FractalFamiliesValid(out string familyMsg), familyMsg, familyMsg);
+        ok &= Report(JuliaPreviewValid(out string previewMsg), previewMsg, previewMsg);
+        ok &= Report(JuliaClickMatrixValid(out string matrixMsg), matrixMsg, matrixMsg);
 
         Console.WriteLine(ok ? "self-test passed" : "self-test failed");
         return ok;
@@ -529,6 +535,480 @@ public static class SelfTest
         }
 
         message = "all 5 fractal families valid across scalar, probe, symmetry, and 2x2 Jacobian lighting";
+        return true;
+    }
+
+    static bool JuliaPreviewValid(out string message)
+    {
+        var deep = new FormulaParams(3, 25_000, false, 0, 0, FractalFamily.BurningShip);
+        FormulaParams preview = JuliaPreviewFeature.BuildPreviewFormula(deep, -0.742, 0.128);
+        if (!preview.Julia
+            || preview.Family != FractalFamily.BurningShip
+            || Math.Abs(preview.Power - 3) > 1e-9
+            || Math.Abs(preview.JuliaRe - (-0.742)) > 1e-12
+            || Math.Abs(preview.JuliaIm - 0.128) > 1e-12
+            || preview.MaxIterations != JuliaPreviewFeature.MaxPreviewIterations)
+        {
+            message = $"BuildPreviewFormula failed to configure Julia preview ({preview})";
+            return false;
+        }
+
+        // Low iteration counts should be preserved faithfully.
+        var low = new FormulaParams(2, 12, false, 0, 0);
+        if (JuliaPreviewFeature.BuildPreviewFormula(low, -0.5, 0.2).MaxIterations != 12)
+        {
+            message = "BuildPreviewFormula should preserve low iteration counts";
+            return false;
+        }
+
+        var histColor = ColoringParams.Default with { Mode = ColoringMode.Histogram, NormalLighting = true, CursorLight = true };
+        ColoringParams previewColor = JuliaPreviewFeature.BuildPreviewColoring(histColor);
+        if (previewColor.Mode != ColoringMode.Cyclic || previewColor.CursorLight || !previewColor.NormalLighting)
+        {
+            message = "BuildPreviewColoring should use cyclic mode and directional lighting";
+            return false;
+        }
+
+        using var feature = new JuliaPreviewFeature();
+        if (feature.Enabled || feature.MatchZoom)
+        {
+            message = "Julia preview and Match zoom should default to disabled (optional)";
+            return false;
+        }
+
+        var zoomedView = new ViewportState(BigFloat.FromDouble(-0.7436), BigFloat.FromDouble(0.1318), FloatExp.FromDouble(0.005));
+        if (Math.Abs(feature.ResolvePreviewViewport(zoomedView).Scale - FractalView.DefaultJuliaScale) > 1e-12
+            || Math.Abs(feature.ResolveJumpScale(zoomedView).ToDouble() - FractalView.DefaultJuliaScale) > 1e-12)
+        {
+            message = "MatchZoom=false should use default Julia scale for preview and jump";
+            return false;
+        }
+
+        feature.MatchZoom = true;
+        if (Math.Abs(feature.ResolvePreviewViewport(zoomedView).Scale - 0.005) > 1e-12
+            || Math.Abs(feature.ResolveJumpScale(zoomedView).ToDouble() - 0.005) > 1e-12)
+        {
+            message = "MatchZoom=true should match Mandelbrot zoom scale for preview and jump";
+            return false;
+        }
+
+        if (JuliaPreviewFeature.BuildPreviewFormula(deep, -0.742, 0.128, matchZoom: true).MaxIterations != JuliaPreviewFeature.MaxZoomedPreviewIterations)
+        {
+            message = "MatchZoom preview should use higher zoomed iteration cap";
+            return false;
+        }
+
+        FloatExp.TryParse("1e-25", out FloatExp deepScale);
+        var ultraDeep = new ViewportState(BigFloat.Zero, BigFloat.Zero, deepScale);
+        if (feature.ResolvePreviewViewport(ultraDeep).Scale < 9e-13
+            || feature.ResolveJumpScale(ultraDeep) != deepScale)
+        {
+            message = "MatchZoom should floor preview at 1e-12 while preserving exact deep-zoom jump scale";
+            return false;
+        }
+
+        feature.SaveReturnView(zoomedView, FractalFamily.Multibrot);
+        if (!feature.HasReturnView)
+        {
+            message = "HasReturnView should be true after SaveReturnView";
+            return false;
+        }
+
+        if (!JuliaPreviewFeature.IsCleanClick(new Vector2(100, 100), new Vector2(102, 102), false)
+            || JuliaPreviewFeature.IsCleanClick(new Vector2(100, 100), new Vector2(115, 100), false)
+            || JuliaPreviewFeature.IsCleanClick(new Vector2(100, 100), new Vector2(100, 100), true))
+        {
+            message = "IsCleanClick drag discrimination failed";
+            return false;
+        }
+
+        if (!feature.TryConsumeReturnView(FractalFamily.Multibrot, out ViewportState restored)
+            || Math.Abs(restored.CenterX - (-0.7436)) > 1e-12
+            || Math.Abs(restored.Scale - 0.005) > 1e-12)
+        {
+            message = "SaveReturnView / TryConsumeReturnView failed to restore matching family viewport";
+            return false;
+        }
+
+        if (feature.TryConsumeReturnView(FractalFamily.Multibrot, out _))
+        {
+            message = "TryConsumeReturnView should only consume the saved view once";
+            return false;
+        }
+
+        feature.SaveReturnView(zoomedView, FractalFamily.Multibrot);
+        if (feature.TryConsumeReturnView(FractalFamily.Tricorn, out _))
+        {
+            message = "TryConsumeReturnView should discard saved view when fractal family changed";
+            return false;
+        }
+
+        message = "live Julia preview config, match-zoom, iteration cap, and return-view memory valid";
+        return true;
+    }
+
+    static bool JuliaClickMatrixValid(out string message)
+    {
+        const int canvasW = 1588;
+        const int canvasH = 1200;
+        var mapCenterX = BigFloat.FromDouble(-0.7436);
+        var mapCenterY = BigFloat.FromDouble(0.1318);
+        var mapScale = FloatExp.FromDouble(0.025);
+        const double hoverRe = -0.742;
+        const double hoverIm = 0.128;
+
+        string[] entries = ["PreviewClick", "RightClick", "Space", "KeyJ", "JuliaCheckbox"];
+        string[] midActions =
+        [
+            "None",
+            "WheelZoomIn",
+            "WheelZoomOut",
+            "DragPan",
+            "ResetViewBtn",
+            "KeyR",
+            "TogglePreview",
+            "ToggleMatchZoom",
+            "ToggleJuliaOffAndOn",
+            "EditReC",
+            "ClickSidePanel",
+            "DeepZoom1e20",
+        ];
+
+        int scenariosRun = 0;
+
+        foreach (bool startPreview in new[] { false, true })
+        foreach (bool startMatchZoom in new[] { false, true })
+        foreach (string entry in entries)
+        {
+            if (entry == "PreviewClick" && !startPreview)
+                continue;
+
+            foreach (string mid in midActions)
+            {
+                using var preview = new JuliaPreviewFeature
+                {
+                    Enabled = startPreview,
+                    MatchZoom = startMatchZoom,
+                };
+                var nav = new NavigationFeature();
+                var formula = new FormulaFeature();
+                var editScope = new TextEditScope();
+
+                FloatExp initialScale = mid == "DeepZoom1e20" ? FloatExp.FromDouble(1e-20) : mapScale;
+                nav.SetExact(mapCenterX, mapCenterY, initialScale);
+                ViewportState expectedMap = nav.State;
+
+                if (startPreview)
+                    preview.SetFixedPreviewC(hoverRe, hoverIm);
+
+                Rectangle card = preview.GetCardRect(canvasW, canvasH);
+                var cardPos = new Vector2(card.x + 20, card.y + 20);
+                var canvasPos = new Vector2(600, 500);
+                var panelPos = new Vector2(canvasW + 80, 300);
+
+                // 1. Enter Julia mode via the chosen entry method.
+                switch (entry)
+                {
+                    case "PreviewClick":
+                        preview.HandleInput(
+                            canvasW, canvasH, formula.State, true, hoverRe, hoverIm,
+                            pointerOverCard: true, keyboardCaptured: false,
+                            new JuliaPreviewInput(cardPos, LeftPressed: true, LeftDown: true, LeftReleased: false, false, false, false),
+                            out bool jumped1, out double jRe1, out double jIm1, out _);
+                        if (!jumped1) { message = $"[{entry}/{mid}] PreviewClick failed to jump"; return false; }
+                        preview.EnterJuliaFromJump(nav, formula, jRe1, jIm1);
+                        // Releasing the entry click on the next frame must NOT bounce back to Mandelbrot.
+                        preview.HandleInput(
+                            canvasW, canvasH, formula.State, false, 0, 0,
+                            pointerOverCard: false, keyboardCaptured: false,
+                            new JuliaPreviewInput(cardPos, LeftPressed: false, LeftDown: false, LeftReleased: true, false, false, false),
+                            out _, out _, out _, out bool bounced);
+                        if (bounced || !formula.State.Julia)
+                        {
+                            message = $"[{entry}/{mid}] entry click release bounced out of Julia";
+                            return false;
+                        }
+                        break;
+
+                    case "RightClick":
+                        preview.HandleInput(
+                            canvasW, canvasH, formula.State, true, hoverRe, hoverIm,
+                            pointerOverCard: false, keyboardCaptured: false,
+                            new JuliaPreviewInput(canvasPos, false, false, false, RightPressed: true, false, false),
+                            out bool jumped2, out double jRe2, out double jIm2, out _);
+                        if (!jumped2) { message = $"[{entry}/{mid}] RightClick failed to jump"; return false; }
+                        preview.EnterJuliaFromJump(nav, formula, jRe2, jIm2);
+                        break;
+
+                    case "Space":
+                        preview.HandleInput(
+                            canvasW, canvasH, formula.State, true, hoverRe, hoverIm,
+                            pointerOverCard: false, keyboardCaptured: false,
+                            new JuliaPreviewInput(canvasPos, false, false, false, false, SpacePressed: true, false),
+                            out bool jumped3, out double jRe3, out double jIm3, out _);
+                        if (!jumped3) { message = $"[{entry}/{mid}] Space failed to jump"; return false; }
+                        preview.EnterJuliaFromJump(nav, formula, jRe3, jIm3);
+                        break;
+
+                    case "KeyJ":
+                    case "JuliaCheckbox":
+                        bool wasJulia = formula.State.Julia;
+                        formula.SetFormula(formula.State with { Julia = true });
+                        preview.OnJuliaToggled(nav, formula, wasJulia);
+                        break;
+                }
+
+                if (!formula.State.Julia || !preview.HasReturnView)
+                {
+                    message = $"[preview={startPreview},match={startMatchZoom},{entry}/{mid}] failed to arm return view on Julia entry";
+                    return false;
+                }
+
+                // Verify MatchZoom applied on entry.
+                FloatExp expectedJuliaScale = startMatchZoom ? initialScale : FloatExp.FromDouble(FractalView.DefaultJuliaScale);
+                if (nav.State.ScaleExact != expectedJuliaScale)
+                {
+                    message = $"[preview={startPreview},match={startMatchZoom},{entry}/{mid}] wrong Julia entry scale";
+                    return false;
+                }
+
+                // 2. Perform in-Julia action (zoom, pan, reset, toggle options, edit field).
+                switch (mid)
+                {
+                    case "WheelZoomIn":
+                        nav.SetExact(nav.State.CenterXExact, nav.State.CenterYExact, nav.State.ScaleExact * 0.2);
+                        break;
+
+                    case "WheelZoomOut":
+                        nav.SetExact(nav.State.CenterXExact, nav.State.CenterYExact, nav.State.ScaleExact * 3.0);
+                        break;
+
+                    case "DragPan":
+                        // Press -> drag 40px -> release: must stay in Julia!
+                        preview.HandleInput(canvasW, canvasH, formula.State, false, 0, 0, false, false,
+                            new JuliaPreviewInput(canvasPos, true, true, false, false, false, false),
+                            out _, out _, out _, out bool r1);
+                        preview.HandleInput(canvasW, canvasH, formula.State, false, 0, 0, false, false,
+                            new JuliaPreviewInput(canvasPos + new Vector2(40, 10), false, true, false, false, false, false),
+                            out _, out _, out _, out bool r2);
+                        preview.HandleInput(canvasW, canvasH, formula.State, false, 0, 0, false, false,
+                            new JuliaPreviewInput(canvasPos + new Vector2(40, 10), false, false, true, false, false, false),
+                            out _, out _, out _, out bool r3);
+                        if (r1 || r2 || r3 || !formula.State.Julia)
+                        {
+                            message = $"[{entry}/{mid}] drag pan erroneously triggered return to Mandelbrot";
+                            return false;
+                        }
+                        nav.SetExact(BigFloat.FromDouble(0.25), BigFloat.FromDouble(-0.15), nav.State.ScaleExact * 0.5);
+                        break;
+
+                    case "ResetViewBtn":
+                        preview.OnResetView(nav, formula);
+                        break;
+
+                    case "KeyR":
+                        formula.State.GetDefaultView(out double rx, out double ry, out double rs);
+                        nav.ResetTo(rx, ry, rs);
+                        break;
+
+                    case "TogglePreview":
+                        preview.Enabled = !preview.Enabled;
+                        break;
+
+                    case "ToggleMatchZoom":
+                        preview.MatchZoom = !preview.MatchZoom;
+                        preview.OnMatchZoomToggled(nav, formula.State);
+                        FloatExp expectedAfterToggle = preview.MatchZoom ? initialScale : FloatExp.FromDouble(FractalView.DefaultJuliaScale);
+                        if (nav.State.ScaleExact != expectedAfterToggle)
+                        {
+                            message = $"[{entry}/{mid}] toggling MatchZoom in Julia did not update Julia zoom";
+                            return false;
+                        }
+                        break;
+
+                    case "ToggleJuliaOffAndOn":
+                        formula.ExitJulia();
+                        preview.OnJuliaToggled(nav, formula, wasJulia: true);
+                        if (formula.State.Julia || nav.State.ScaleExact != expectedMap.ScaleExact)
+                        {
+                            message = $"[{entry}/{mid}] toggling Julia off did not restore map view";
+                            return false;
+                        }
+                        formula.SetFormula(formula.State with { Julia = true });
+                        preview.OnJuliaToggled(nav, formula, wasJulia: false);
+                        break;
+
+                    case "EditReC":
+                        object fakeField = new();
+                        editScope.Toggle(fakeField);
+                        break;
+
+                    case "ClickSidePanel":
+                        preview.HandleInput(canvasW, canvasH, formula.State, false, 0, 0, false, false,
+                            new JuliaPreviewInput(panelPos, true, true, false, false, false, false),
+                            out _, out _, out _, out bool pr1);
+                        preview.HandleInput(canvasW, canvasH, formula.State, false, 0, 0, false, false,
+                            new JuliaPreviewInput(panelPos, false, false, true, false, false, false),
+                            out _, out _, out _, out bool pr2);
+                        if (pr1 || pr2)
+                        {
+                            message = $"[{entry}/{mid}] clicking side panel erroneously triggered return";
+                            return false;
+                        }
+                        break;
+                }
+
+                // 3. Clean left-click (with realistic 6px jitter) on Julia canvas MUST return to original Mandelbrot!
+                Vector2 clickStart = new(700, 480);
+                Vector2 clickEnd = new(705, 484); // ~6.4px drift, within 10px tolerance
+                preview.HandleInput(canvasW, canvasH, formula.State, false, 0, 0, false, editScope.CapturesKeyboard,
+                    new JuliaPreviewInput(clickStart, true, true, false, false, false, false),
+                    out _, out _, out _, out bool retDown);
+                preview.HandleInput(canvasW, canvasH, formula.State, false, 0, 0, false, editScope.CapturesKeyboard,
+                    new JuliaPreviewInput(clickEnd, false, false, true, false, false, false),
+                    out _, out _, out _, out bool retUp);
+
+                if (retDown || !retUp)
+                {
+                    message = $"[preview={startPreview},match={startMatchZoom},{entry}/{mid}] left-click failed to return to Mandelbrot";
+                    return false;
+                }
+
+                editScope.CancelAll();
+                if (!preview.ReturnToMap(nav, formula))
+                {
+                    message = $"[preview={startPreview},match={startMatchZoom},{entry}/{mid}] ReturnToMap returned false";
+                    return false;
+                }
+
+                if (formula.State.Julia
+                    || editScope.CapturesKeyboard
+                    || Math.Abs(nav.State.CenterX - expectedMap.CenterX) > 1e-12
+                    || Math.Abs(nav.State.CenterY - expectedMap.CenterY) > 1e-12
+                    || nav.State.ScaleExact != expectedMap.ScaleExact)
+                {
+                    message = $"[preview={startPreview},match={startMatchZoom},{entry}/{mid}] did not restore exact original Mandelbrot view";
+                    return false;
+                }
+
+                scenariosRun++;
+            }
+        }
+
+        // Verify same-frame press+release tap (and MouseClickLatch sub-frame recording + native GLFW exports) returns cleanly.
+        {
+            if (!MouseClickLatch.CanResolveGlfwExports())
+            {
+                message = "MouseClickLatch failed to resolve glfwGetCurrentContext / glfwSetMouseButtonCallback from raylib";
+                return false;
+            }
+
+            MouseClickLatch.ClearAll();
+            MouseClickLatch.RecordButtonEvent((int)MouseButton.MOUSE_BUTTON_LEFT, MouseClickLatch.GlfwPress);
+            MouseClickLatch.RecordButtonEvent((int)MouseButton.MOUSE_BUTTON_LEFT, MouseClickLatch.GlfwRelease);
+            MouseClickLatch.BeginFrame();
+            if (!MouseClickLatch.IsLatchedPressed(MouseButton.MOUSE_BUTTON_LEFT)
+                || !MouseClickLatch.IsLatchedReleased(MouseButton.MOUSE_BUTTON_LEFT))
+            {
+                message = "MouseClickLatch failed to preserve sub-frame left tap press+release";
+                return false;
+            }
+
+            using var preview = new JuliaPreviewFeature { Enabled = true };
+            var nav = new NavigationFeature();
+            var formula = new FormulaFeature();
+            preview.EnterJuliaFromJump(nav, formula, hoverRe, hoverIm);
+            preview.HandleInput(canvasW, canvasH, formula.State, false, 0, 0, false, false,
+                new JuliaPreviewInput(
+                    new Vector2(500, 500),
+                    MouseClickLatch.IsLatchedPressed(MouseButton.MOUSE_BUTTON_LEFT),
+                    false,
+                    MouseClickLatch.IsLatchedReleased(MouseButton.MOUSE_BUTTON_LEFT),
+                    false,
+                    false,
+                    false),
+                out _, out _, out _, out bool tapReturn);
+            MouseClickLatch.BeginFrame();
+            if (!tapReturn || !preview.ReturnToMap(nav, formula) || formula.State.Julia
+                || MouseClickLatch.IsLatchedPressed(MouseButton.MOUSE_BUTTON_LEFT)
+                || MouseClickLatch.IsLatchedReleased(MouseButton.MOUSE_BUTTON_LEFT))
+            {
+                message = "same-frame tap press+release failed to return to Mandelbrot or clear latch";
+                return false;
+            }
+            scenariosRun++;
+        }
+
+        // Verify stationary right-click in Mandelbrot -> right-click at exact same spot in Julia returns immediately,
+        // and right-click over the side panel does NOT trigger return.
+        {
+            using var preview = new JuliaPreviewFeature { Enabled = true };
+            var nav = new NavigationFeature();
+            var formula = new FormulaFeature();
+            var spot = new Vector2(520, 410);
+            ViewportState initialMap = nav.State;
+
+            preview.HandleInput(canvasW, canvasH, formula.State, true, hoverRe, hoverIm,
+                pointerOverCard: false, keyboardCaptured: false,
+                new JuliaPreviewInput(spot, false, false, false, RightPressed: true, false, false),
+                out bool jumpedIn, out double jRe, out double jIm, out _);
+            if (!jumpedIn)
+            {
+                message = "stationary right-click failed to enter Julia";
+                return false;
+            }
+            preview.EnterJuliaFromJump(nav, formula, jRe, jIm);
+
+            // Right-clicking the side panel must not return.
+            preview.HandleInput(canvasW, canvasH, formula.State, false, 0, 0,
+                pointerOverCard: false, keyboardCaptured: false,
+                new JuliaPreviewInput(new Vector2(canvasW + 40, 200), false, false, false, RightPressed: true, false, false),
+                out _, out _, out _, out bool panelRightRet);
+            if (panelRightRet)
+            {
+                message = "right-click over side panel erroneously triggered return";
+                return false;
+            }
+
+            // Right-clicking the exact same stationary point on canvas must return immediately.
+            MouseClickLatch.ClearAll();
+            MouseClickLatch.RecordButtonEvent((int)MouseButton.MOUSE_BUTTON_RIGHT, MouseClickLatch.GlfwPress);
+            MouseClickLatch.RecordButtonEvent((int)MouseButton.MOUSE_BUTTON_RIGHT, MouseClickLatch.GlfwRelease);
+            MouseClickLatch.BeginFrame();
+            preview.HandleInput(canvasW, canvasH, formula.State, false, 0, 0,
+                pointerOverCard: false, keyboardCaptured: false,
+                new JuliaPreviewInput(spot, false, false, false,
+                    RightPressed: MouseClickLatch.IsLatchedPressed(MouseButton.MOUSE_BUTTON_RIGHT),
+                    false, false),
+                out _, out _, out _, out bool rightRet);
+            MouseClickLatch.ClearAll();
+
+            if (!rightRet || !preview.ReturnToMap(nav, formula) || formula.State.Julia
+                || nav.State.ScaleExact != initialMap.ScaleExact)
+            {
+                message = "stationary right-click in Julia failed to return to original Mandelbrot view";
+                return false;
+            }
+            scenariosRun++;
+        }
+
+        // Verify changing fractal family while in Julia clears return view so left-click does not restore stale family.
+        {
+            using var preview = new JuliaPreviewFeature { Enabled = true };
+            var nav = new NavigationFeature();
+            var formula = new FormulaFeature();
+            preview.EnterJuliaFromJump(nav, formula, hoverRe, hoverIm);
+            formula.SetFormula(formula.State with { Family = FractalFamily.BurningShip });
+            preview.OnFamilyChanged(nav, formula);
+            if (preview.HasReturnView)
+            {
+                message = "changing fractal family should clear saved return view";
+                return false;
+            }
+            scenariosRun++;
+        }
+
+        message = $"Julia jump/return click matrix passed across {scenariosRun} option & action combinations";
         return true;
     }
 }

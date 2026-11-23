@@ -2,6 +2,7 @@ using Mandelbrot.Visualizer.Features.Capture;
 using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Diagnostics;
 using Mandelbrot.Visualizer.Features.Formula;
+using Mandelbrot.Visualizer.Features.JuliaPreview;
 using Mandelbrot.Visualizer.Features.Navigation;
 using Mandelbrot.Visualizer.Features.Rendering;
 using Mandelbrot.Visualizer.Shared;
@@ -25,7 +26,11 @@ public sealed record LaunchOptions(
     float? LightY = null,
     double? LightAngle = null,
     bool Fullscreen = false,
-    FractalFamily? Family = null);
+    FractalFamily? Family = null,
+    bool JuliaPreview = false,
+    double? PreviewCRe = null,
+    double? PreviewCIm = null,
+    bool MatchZoom = false);
 
 /// <summary>
 /// Thin application shell owning the Raylib window lifecycle and frame loop,
@@ -39,6 +44,7 @@ public sealed class VisualizerHost : IDisposable
     readonly RenderingFeature _rendering = new();
     readonly CaptureFeature _capture;
     readonly DiagnosticsFeature _diagnostics = new();
+    readonly JuliaPreviewFeature _juliaPreview = new();
     readonly SidePanel _panel = new();
     readonly bool _fixedLight;
     readonly bool _startFullscreen;
@@ -52,6 +58,15 @@ public sealed class VisualizerHost : IDisposable
         _capture = new CaptureFeature(options.ScreenshotPath);
         if (options.ForceCpu)
             _rendering.SetUseGpu(false);
+
+        if (options.JuliaPreview || (options.PreviewCRe.HasValue && options.PreviewCIm.HasValue))
+            _juliaPreview.Enabled = true;
+
+        if (options.MatchZoom)
+            _juliaPreview.MatchZoom = true;
+
+        if (options.PreviewCRe.HasValue && options.PreviewCIm.HasValue)
+            _juliaPreview.SetFixedPreviewC(options.PreviewCRe.Value, options.PreviewCIm.Value);
 
         if (options.NormalLighting || options.CursorLight || options.LightAngle.HasValue || options.OrbitTrap != OrbitTrapMode.None || options.Interior.HasValue)
         {
@@ -109,12 +124,15 @@ public sealed class VisualizerHost : IDisposable
         Raylib.SetWindowMinSize(1100, 760);
         Raylib.SetTargetFPS(60);
         Raylib.SetExitKey(KeyboardKey.KEY_NULL);
+        MouseClickLatch.Install();
         PanelTheme.Apply();
         _rendering.Load();
         _capture.StartClock();
 
         while (!Raylib.WindowShouldClose() && !_quit)
         {
+            MouseClickLatch.BeginFrame();
+
             int screenWidth = Raylib.GetScreenWidth();
             int screenHeight = Raylib.GetScreenHeight();
             int canvasWidth = Math.Max(1, _panel.Visible ? screenWidth - SidePanel.Width : screenWidth);
@@ -122,7 +140,7 @@ public sealed class VisualizerHost : IDisposable
 
             _capture.TrackWindowSize(screenWidth, screenHeight);
 
-            bool dirty = HandleInput(canvasWidth, canvasHeight);
+            bool dirty = HandleInput(canvasWidth, canvasHeight, out bool pointerOverPreview);
             dirty |= _formula.SyncAutoIterations(_navigation.State.ScaleExact);
             if (!_fixedLight)
             {
@@ -136,6 +154,7 @@ public sealed class VisualizerHost : IDisposable
             Raylib.BeginDrawing();
             Raylib.ClearBackground(PanelTheme.CanvasBackground);
             _rendering.DrawCanvas(canvasWidth, canvasHeight, _navigation.State, _formula.State, _coloring.State, finalQuality);
+            _juliaPreview.DrawOverlay(canvasWidth, canvasHeight, _navigation.State, _formula.State, _coloring.State, _rendering, pointerOverPreview);
 
             if (!_panel.Visible)
                 _diagnostics.DrawHud(canvasWidth, canvasHeight, _formula.State, _coloring.State.Mode, _navigation, _rendering);
@@ -150,7 +169,8 @@ public sealed class VisualizerHost : IDisposable
                 _coloring,
                 _rendering,
                 _capture,
-                _diagnostics);
+                _diagnostics,
+                _juliaPreview);
 
             dirty |= _formula.SyncAutoIterations(_navigation.State.ScaleExact);
             _capture.CaptureWindowIfReady(_rendering, _coloring.State.Mode);
@@ -169,11 +189,13 @@ public sealed class VisualizerHost : IDisposable
                 break;
         }
 
+        MouseClickLatch.Uninstall();
+        _juliaPreview.Dispose();
         _rendering.Dispose();
         Raylib.CloseWindow();
     }
 
-    bool HandleInput(int canvasWidth, int canvasHeight)
+    bool HandleInput(int canvasWidth, int canvasHeight, out bool pointerOverPreview)
     {
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_ESCAPE))
         {
@@ -183,7 +205,37 @@ public sealed class VisualizerHost : IDisposable
                 _quit = true;
         }
 
-        bool changed = _navigation.HandlePointer(canvasWidth, canvasHeight, _panel.Visible);
+        pointerOverPreview = _juliaPreview.IsPointerOverCard(canvasWidth, canvasHeight, _formula.State);
+        _juliaPreview.UpdatePreviewTarget(canvasWidth, canvasHeight, _formula.State, _navigation, pointerOverPreview);
+
+        bool changed = _navigation.HandlePointer(canvasWidth, canvasHeight, _panel.Visible, pointerOverPreview);
+
+        changed |= _juliaPreview.HandleInput(
+            canvasWidth,
+            canvasHeight,
+            _formula.State,
+            _navigation,
+            pointerOverPreview,
+            _panel.EditScope.CapturesKeyboard,
+            out bool jumpedToJulia,
+            out double jumpRe,
+            out double jumpIm,
+            out bool returnedToMap);
+        if (jumpedToJulia)
+        {
+            _panel.EditScope.CancelAll();
+            _juliaPreview.EnterJuliaFromJump(_navigation, _formula, jumpRe, jumpIm);
+            pointerOverPreview = false;
+            return true;
+        }
+
+        if (returnedToMap)
+        {
+            _panel.EditScope.CancelAll();
+            if (_juliaPreview.ReturnToMap(_navigation, _formula))
+                return true;
+        }
+
         if (_panel.EditScope.CapturesKeyboard)
             return changed;
 
@@ -195,11 +247,18 @@ public sealed class VisualizerHost : IDisposable
 
         _formula.State.GetDefaultView(out double defaultCx, out double defaultCy, out double defaultScale);
         changed |= _navigation.HandleKeys(canvasWidth, canvasHeight, defaultCx, defaultCy, defaultScale);
+
+        bool wasJulia = _formula.State.Julia;
+        FractalFamily prevFamily = _formula.State.Family;
         changed |= _formula.HandleKeys(out bool viewResetNeeded, out bool interactive);
         if (viewResetNeeded)
         {
-            _formula.State.GetDefaultView(out double cx, out double cy, out double scale);
-            _navigation.ResetTo(cx, cy, scale);
+            if (_formula.State.Family != prevFamily)
+                _juliaPreview.OnFamilyChanged(_navigation, _formula);
+            else if (_formula.State.Julia != wasJulia)
+                _juliaPreview.OnJuliaToggled(_navigation, _formula, wasJulia);
+            else
+                _juliaPreview.OnResetView(_navigation, _formula);
         }
         if (interactive)
             _navigation.Touch();
@@ -211,5 +270,9 @@ public sealed class VisualizerHost : IDisposable
         return changed;
     }
 
-    public void Dispose() => _rendering.Dispose();
+    public void Dispose()
+    {
+        _juliaPreview.Dispose();
+        _rendering.Dispose();
+    }
 }

@@ -34,6 +34,9 @@ public sealed class RenderingFeature : IDisposable
     public bool UsingGpu(ColoringMode mode)
         => UseGpu && _gpu.IsAvailable && mode != ColoringMode.Histogram;
 
+    public bool RenderPreviewGpu(RenderTexture target, int width, int height, in RenderRequest request)
+        => UseGpu && _gpu.IsAvailable && _gpu.RenderOffscreen(target, width, height, request);
+
     public bool UsingSimd()
         => UseSimd && SimdMultibrot.IsSupported;
 
