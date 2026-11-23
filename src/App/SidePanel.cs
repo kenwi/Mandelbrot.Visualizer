@@ -1,3 +1,4 @@
+using Mandelbrot.Visualizer.Features.Bookmarks;
 using Mandelbrot.Visualizer.Features.Capture;
 using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Diagnostics;
@@ -32,10 +33,15 @@ public sealed class SidePanel
         RenderingFeature rendering,
         CaptureFeature capture,
         DiagnosticsFeature diagnostics,
-        JuliaPreviewFeature juliaPreview)
+        JuliaPreviewFeature juliaPreview,
+        BookmarksFeature bookmarks)
     {
         if (!Visible)
             return false;
+
+        bool panelBlocked = bookmarks.CapturesInput;
+        if (panelBlocked)
+            RayGui.GuiDisable();
 
         var panel = new Rectangle { x = screenWidth - Width, y = 0, width = Width, height = screenHeight };
         Raylib.DrawRectangleRec(panel, PanelTheme.PanelBackground);
@@ -59,12 +65,14 @@ public sealed class SidePanel
         if (familyChanged)
         {
             EditScope.CancelAll();
+            bookmarks.ClearSelection();
             juliaPreview.OnFamilyChanged(navigation, formula);
             changed = true;
         }
         else if (juliaToggled)
         {
             EditScope.CancelAll();
+            bookmarks.ClearSelection();
             juliaPreview.OnJuliaToggled(navigation, formula, wasJulia);
             changed = true;
         }
@@ -72,15 +80,24 @@ public sealed class SidePanel
         if (matchZoomChanged)
             juliaPreview.OnMatchZoomToggled(navigation, formula.State);
 
+        if (panelBlocked)
+            RayGui.GuiEnable();
+
+        bookmarks.DrawPanel(ref layout, navigation.State, formula.State, coloring.State, rendering, EditScope);
+
+        if (panelBlocked)
+            RayGui.GuiDisable();
+
         layout.TwoButtons("Reset view", "Save PNG", out bool resetView, out bool saveImage);
-        if (resetView)
+        if (!panelBlocked && resetView)
         {
             EditScope.CancelAll();
+            bookmarks.ClearSelection();
             juliaPreview.OnResetView(navigation, formula);
             changed = true;
         }
 
-        if (saveImage)
+        if (!panelBlocked && saveImage)
             capture.SaveInteractive(rendering, coloring.State.Mode);
 
         layout.Separator();
@@ -89,14 +106,16 @@ public sealed class SidePanel
         navigation.DrawViewportTelemetry(ref layout, formula.State.Power);
         diagnostics.DrawTelemetry(ref layout, rendering, coloring.State.Mode);
 
-        layout.Space(6);
-        layout.Hint("Drag or arrows pan   wheel zoom");
-        layout.Hint("Shift up/down zoom   double-click zoom");
-        layout.Hint("hold [ ] power   - + iterations   C palette");
-        layout.Hint("R reset  J julia  P preview  G gpu  V simd");
-        layout.Hint("F fractal  L 3d  M light  T trap  A ssaa");
-        layout.Hint("RMB / Space julia jump  H panel  S save");
+        layout.Space(2);
+        layout.Hint("Drag/arrows pan  wheel/dbl-click zoom");
+        layout.Hint("[ ] power  - + iter  C palette  F fractal");
+        layout.Hint("R reset  J julia  P preview  B save  , . spot");
+        layout.Hint("L 3d  M light  T trap  A ssaa  G gpu");
+        layout.Hint("RMB / Space julia  H panel  S save");
 
-        return changed;
+        if (panelBlocked)
+            RayGui.GuiEnable();
+
+        return !panelBlocked && changed;
     }
 }

@@ -11,6 +11,40 @@ public static class Palette
     public const string ComboItems = "Classic;Fire;Electric;Ocean;Sunset;Ice;Grayscale;Rainbow";
     public const int Count = 8;
 
+    public static readonly string[] Names =
+    [
+        "Classic",
+        "Fire",
+        "Electric",
+        "Ocean",
+        "Sunset",
+        "Ice",
+        "Grayscale",
+        "Rainbow",
+    ];
+
+    public static string NameOf(int palette)
+        => Names[Math.Clamp(palette, 0, Count - 1)];
+
+    public static bool TryParseName(string? name, out int palette)
+    {
+        palette = 0;
+        if (string.IsNullOrWhiteSpace(name))
+            return false;
+
+        string trimmed = name.Trim();
+        for (int i = 0; i < Names.Length; i++)
+        {
+            if (Names[i].Equals(trimmed, StringComparison.OrdinalIgnoreCase))
+            {
+                palette = i;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     readonly record struct Stop(float T, byte R, byte G, byte B);
 
     static readonly Stop[] Classic =

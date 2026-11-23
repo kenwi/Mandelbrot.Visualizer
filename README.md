@@ -18,6 +18,7 @@ An interactive viewer for the Mandelbrot set and its relatives. Every pixel asks
 - Switch to a Julia set and type the constant `c`, or enable the optional **Julia preview** corner overlay (`P`) to preview the Julia set for the cursor's `c` live and jump straight into it with a click on the preview, right-click, or `Space` (optionally with **Match zoom** to keep the same zoom level for both preview and jump, and returning to your previous map view with a left-click or right-click on the canvas or by toggling `J`).
 - Draw with tiered GPU fragment shaders (native float32, double-float, and deep-zoom perturbation with progressive tiling and idle frame caching), or switch to the CPU backend with orbit caching for instant recoloring. Histogram coloring always uses the CPU.
 - Optional **2x / 4x SSAA** (`2x2` / `4x4` rotated-grid supersampling, hotkey `A` or `--ssaa`) on final frames and PNG captures across both GPU and CPU to eliminate sparkling moire noise on ultra-dense filaments while keeping interactive panning/zooming at 1x speed.
+- **Bookmarks & curated landmarks** (`bookmarks.json`): jump to 25 curated spots across all five fractal families (including Seahorse Valley, Elephant Valley, Scepter Valley, Mini-brot at `1e-30`, classic Julia sets, Burning Ship Armada, and family Julia sets), save your own deep-zoom locations with a custom or auto-generated name (`B` or `Save spot`), cycle through all bookmarks with `,` / `.` (or `PageUp` / `PageDown`), and copy a reproducible deep-zoom launch command with **Copy CLI**.
 - Optionally evaluate positive whole-number powers with AVX2 / AVX-512 SIMD (FMA + lane refilling) on the CPU.
 - Optionally show how long the newest image took to generate.
 - Save the current picture as a PNG under `captures/`, or render headlessly from the command line with `--screenshot`.
@@ -124,15 +125,18 @@ You need the .NET 11 SDK.
 dotnet run --project src/Mandelbrot.Visualizer.csproj
 ```
 
-Run the headless verification suite (checks known points, SIMD parity, palette LUT endpoints, `BigFloat`/`FloatExp`/`ComplexExp` math, deep-zoom perturbation parity at `1e-25` and `1e-80`, and cursor orbit probing):
+Run the headless verification suite (checks known points, SIMD parity, palette LUT endpoints, `BigFloat`/`FloatExp`/`ComplexExp` math, deep-zoom perturbation parity at `1e-25` and `1e-80`, cursor orbit probing, 3D lighting and orbit traps, fractal families, Julia preview jump/return matrix, SSAA, and bookmarks JSON/CLI round-trips):
 
 ```bash
 dotnet run --project src/Mandelbrot.Visualizer.csproj -- --self-test
 ```
 
-You can also launch directly to a location or capture a PNG from the command line:
+You can also launch directly to a bookmark, a custom deep-zoom location, or capture a PNG from the command line:
 
 ```bash
+dotnet run --project src/Mandelbrot.Visualizer.csproj -- \
+  --bookmark "Mini-brot (1e-30)"
+
 dotnet run --project src/Mandelbrot.Visualizer.csproj -- \
   --center -0.743643887037158704752191506114774,0.131825904205311970493132056385139 \
   --scale 1e-25 --power 2 --iter 1500 --screenshot captures/deep.png
@@ -141,11 +145,17 @@ dotnet run --project src/Mandelbrot.Visualizer.csproj -- \
 Supported CLI options:
 
 - `--self-test` - run headless math and parity checks and exit
+- `--bookmark name` - start at a curated or saved bookmark from `bookmarks.json` (matches exact or partial name; additional flags override fields)
 - `--center re,im` - starting complex center (supports arbitrary decimal digits)
 - `--scale value` - starting viewport half-height (supports scientific notation like `1e-45`)
 - `--power n` - starting exponent `n`
 - `--fractal family` - starting fractal family (`multibrot`, `burningship`, `tricorn`, `celtic`, `buffalo`)
+- `--julia re,im` - start in Julia mode with constant `c = re + im*i`
 - `--iter count` - starting max iterations (`1` to `100000`)
+- `--palette name` - starting palette (`Classic`, `Fire`, `Electric`, `Ocean`, `Sunset`, `Ice`, `Grayscale`, `Rainbow`)
+- `--coloring mode` - coloring mode (`cyclic`, `histogram`)
+- `--density value` - palette density (`0.25` to `4.0`)
+- `--phase value` - palette phase offset (`0.0` to `1.0`)
 - `--cpu` - start with the CPU renderer instead of GPU shaders
 - `--fullscreen` - launch directly in fullscreen mode
 - `--lighting` / `--3d` - enable 3D normal-map lighting
@@ -183,6 +193,9 @@ Pictures saved interactively from the app go to `captures/`.
 | GPU shader | Checkbox or `G`. Histogram coloring stays on the CPU |
 | SIMD | Checkbox or `V`. Speeds positive whole-number powers on the CPU with AVX2 / AVX-512. Fractional powers stay on the scalar path |
 | SSAA | Combo box (`Off`, `2x (2x2)`, `4x (4x4)`) or `A` to cycle. Applies rotated-grid supersampling to final frames and PNG captures while keeping interactive motion at 1x |
+| Bookmarks | `Bookmark` dropdown for curated landmarks and saved spots (stored in `bookmarks.json`, user spots can be removed with `x`). Cycle all bookmarks with `,` / `.` or `PageUp` / `PageDown` |
+| Save bookmark | `Save spot` button or `B`. Prompts for a name (leaving it blank saves an auto-generated fractal/coordinates/zoom label) |
+| Copy CLI command | `Copy CLI` button. Copies a full-precision CLI command to the clipboard to revisit or share the current spot |
 | Frame time | Checkbox. Shows how long the newest image took to generate |
 | Reset view | Button or `R` |
 | Hide the panel | `H` |
@@ -198,8 +211,9 @@ The codebase is organized as vertical feature slices under `src/`:
 - `src/Features/Formula/` - `FormulaParams`, scalar/SIMD Multibrot evaluation, `ReferenceOrbit`, and `PerturbationFormula`
 - `src/Features/Coloring/` - palettes, smooth/histogram mapping, and GPU `PaletteLut` texture
 - `src/Features/Navigation/` - arbitrary-precision `FractalView` camera, input handling, and coordinate telemetry
-- `src/Features/Rendering/` - GPU tiered/tiled shaders (`multibrot_f32.frag`, `multibrot.frag`, `multibrot_perturb.frag`), CPU cached renderer, and backend dispatch
+- `src/Features/Rendering/` - GPU tiered/tiled shaders (`multibrot_f32.frag`, `multibrot.frag`, `multibrot_perturb.frag`, `ssaa_resolve.frag`), CPU cached renderer, SSAA patterns, and backend dispatch
 - `src/Features/JuliaPreview/` - optional live corner Julia preview overlay, cached GPU/CPU thumbnail rendering, one-click / hotkey jump, and return-view memory
+- `src/Features/Bookmarks/` - curated landmark presets, `bookmarks.json` persistence, scrollable dropdown selector, save-with-name prompt modal, hotkey cycling, and full-precision CLI command builder
 - `src/Features/Capture/` - interactive PNG saving and CLI `--screenshot` automation
 - `src/Features/Diagnostics/` - cursor orbit probing, frame-time readout, HUD, and `--self-test`
-- `src/Shared/` - feature-agnostic `BigFloat`, `FloatExp`/`ComplexExp`, and RayGui panel helpers
+- `src/Shared/` - feature-agnostic `BigFloat`, `FloatExp`/`ComplexExp`, GLFW mouse-click latch, and RayGui panel helpers

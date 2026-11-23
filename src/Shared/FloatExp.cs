@@ -136,6 +136,31 @@ public readonly record struct FloatExp : IComparable<FloatExp>
         return true;
     }
 
+    public string ToScientificString()
+    {
+        if (IsZero) return "0";
+
+        bool negative = Mantissa < 0.0;
+        double log10 = Log10();
+        int exp10 = (int)Math.Floor(log10);
+        double mant10 = Math.Pow(10.0, log10 - exp10);
+        if (mant10 >= 9.9999995)
+        {
+            mant10 = 1.0;
+            exp10++;
+        }
+
+        string sign = negative ? "-" : "";
+        if (exp10 is >= -3 and <= 4)
+        {
+            double val = Math.Pow(10.0, log10);
+            return sign + val.ToString("G6", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        string mantStr = mant10.ToString("0.#####", System.Globalization.CultureInfo.InvariantCulture);
+        return $"{sign}{mantStr}e{exp10}";
+    }
+
     public string FormatZoom(double referenceScale)
     {
         if (IsZero) return "inf";

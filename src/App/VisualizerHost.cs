@@ -1,3 +1,4 @@
+using Mandelbrot.Visualizer.Features.Bookmarks;
 using Mandelbrot.Visualizer.Features.Capture;
 using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Diagnostics;
@@ -31,7 +32,15 @@ public sealed record LaunchOptions(
     double? PreviewCRe = null,
     double? PreviewCIm = null,
     bool MatchZoom = false,
-    SsaaMode Ssaa = SsaaMode.Off);
+    SsaaMode Ssaa = SsaaMode.Off,
+    bool? Julia = null,
+    double? JuliaRe = null,
+    double? JuliaIm = null,
+    int? Palette = null,
+    ColoringMode? ColoringMode = null,
+    double? Density = null,
+    double? Phase = null,
+    string? BookmarkName = null);
 
 /// <summary>
 /// Thin application shell owning the Raylib window lifecycle and frame loop,
@@ -46,6 +55,7 @@ public sealed class VisualizerHost : IDisposable
     readonly CaptureFeature _capture;
     readonly DiagnosticsFeature _diagnostics = new();
     readonly JuliaPreviewFeature _juliaPreview = new();
+    readonly BookmarksFeature _bookmarks = new();
     readonly SidePanel _panel = new();
     readonly bool _fixedLight;
     readonly bool _startFullscreen;
@@ -57,6 +67,10 @@ public sealed class VisualizerHost : IDisposable
         _fixedLight = options.LightX.HasValue || options.LightY.HasValue;
         _startFullscreen = options.Fullscreen;
         _capture = new CaptureFeature(options.ScreenshotPath);
+
+        if (!string.IsNullOrWhiteSpace(options.BookmarkName))
+            _bookmarks.ApplyByName(options.BookmarkName, _navigation, _formula, _coloring);
+
         if (options.ForceCpu)
             _rendering.SetUseGpu(false);
 
@@ -72,7 +86,15 @@ public sealed class VisualizerHost : IDisposable
         if (options.PreviewCRe.HasValue && options.PreviewCIm.HasValue)
             _juliaPreview.SetFixedPreviewC(options.PreviewCRe.Value, options.PreviewCIm.Value);
 
-        if (options.NormalLighting || options.CursorLight || options.LightAngle.HasValue || options.OrbitTrap != OrbitTrapMode.None || options.Interior.HasValue)
+        if (options.NormalLighting
+            || options.CursorLight
+            || options.LightAngle.HasValue
+            || options.OrbitTrap != OrbitTrapMode.None
+            || options.Interior.HasValue
+            || options.Palette.HasValue
+            || options.ColoringMode.HasValue
+            || options.Density.HasValue
+            || options.Phase.HasValue)
         {
             ColoringParams current = _coloring.State;
             double angle = options.LightAngle.HasValue
@@ -80,17 +102,26 @@ public sealed class VisualizerHost : IDisposable
                 : current.LightAngle;
             _coloring.SetColoring(current with
             {
-                NormalLighting = options.NormalLighting || options.CursorLight || options.LightAngle.HasValue,
-                CursorLight = options.CursorLight,
+                Palette = options.Palette.HasValue ? Math.Clamp(options.Palette.Value, 0, Palette.Count - 1) : current.Palette,
+                Mode = options.ColoringMode ?? current.Mode,
+                Density = options.Density.HasValue ? Math.Clamp(options.Density.Value, 0.25, 4.0) : current.Density,
+                Phase = options.Phase.HasValue ? Math.Clamp(options.Phase.Value, 0.0, 1.0) : current.Phase,
+                NormalLighting = current.NormalLighting || options.NormalLighting || options.CursorLight || options.LightAngle.HasValue,
+                CursorLight = current.CursorLight || options.CursorLight,
                 LightX = options.LightX ?? current.LightX,
                 LightY = options.LightY ?? current.LightY,
                 LightAngle = angle,
-                OrbitTrap = options.OrbitTrap,
+                OrbitTrap = options.OrbitTrap != OrbitTrapMode.None ? options.OrbitTrap : current.OrbitTrap,
                 Interior = options.Interior ?? current.Interior,
             });
         }
 
-        if (options.Power.HasValue || options.MaxIterations.HasValue || options.Family.HasValue)
+        if (options.Power.HasValue
+            || options.MaxIterations.HasValue
+            || options.Family.HasValue
+            || options.Julia.HasValue
+            || options.JuliaRe.HasValue
+            || options.JuliaIm.HasValue)
         {
             FormulaParams current = _formula.State;
             _formula.SetFormula(current with
@@ -98,8 +129,11 @@ public sealed class VisualizerHost : IDisposable
                 Power = options.Power.HasValue ? FormulaParams.ClampNonZeroPower(options.Power.Value) : current.Power,
                 MaxIterations = options.MaxIterations.HasValue ? FormulaParams.ClampIterations(options.MaxIterations.Value) : current.MaxIterations,
                 Family = options.Family ?? current.Family,
+                Julia = options.Julia ?? current.Julia,
+                JuliaRe = options.JuliaRe ?? current.JuliaRe,
+                JuliaIm = options.JuliaIm ?? current.JuliaIm,
             });
-            if (options.Family.HasValue)
+            if (options.Family.HasValue || options.Julia == true)
             {
                 _formula.State.GetDefaultView(out double cx, out double cy, out double scale);
                 _navigation.ResetTo(cx, cy, scale);
@@ -174,7 +208,14 @@ public sealed class VisualizerHost : IDisposable
                 _rendering,
                 _capture,
                 _diagnostics,
-                _juliaPreview);
+                _juliaPreview,
+                _bookmarks);
+
+            if (_bookmarks.DrawOverlay(screenWidth, screenHeight, canvasWidth, _navigation, _formula, _coloring, _panel.EditScope))
+            {
+                _juliaPreview.ClearReturnView();
+                dirty = true;
+            }
 
             dirty |= _formula.SyncAutoIterations(_navigation.State.ScaleExact);
             _capture.CaptureWindowIfReady(_rendering, _coloring.State.Mode);
@@ -203,6 +244,12 @@ public sealed class VisualizerHost : IDisposable
 
     bool HandleInput(int canvasWidth, int canvasHeight, out bool pointerOverPreview)
     {
+        if (_bookmarks.CapturesInput)
+        {
+            pointerOverPreview = false;
+            return false;
+        }
+
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_ESCAPE))
         {
             if (_panel.EditScope.CapturesKeyboard)
@@ -230,6 +277,7 @@ public sealed class VisualizerHost : IDisposable
         if (jumpedToJulia)
         {
             _panel.EditScope.CancelAll();
+            _bookmarks.ClearSelection();
             _juliaPreview.EnterJuliaFromJump(_navigation, _formula, jumpRe, jumpIm);
             pointerOverPreview = false;
             return true;
@@ -238,6 +286,7 @@ public sealed class VisualizerHost : IDisposable
         if (returnedToMap)
         {
             _panel.EditScope.CancelAll();
+            _bookmarks.ClearSelection();
             if (_juliaPreview.ReturnToMap(_navigation, _formula))
                 return true;
         }
@@ -246,10 +295,22 @@ public sealed class VisualizerHost : IDisposable
             return changed;
 
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_H))
+        {
             _panel.Visible = !_panel.Visible;
+            if (!_panel.Visible)
+                _bookmarks.DismissPopups();
+        }
 
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_F11))
             Raylib.ToggleFullscreen();
+
+        if (_bookmarks.HandleKeys(_navigation, _formula, _coloring))
+        {
+            _juliaPreview.ClearReturnView();
+            return true;
+        }
+        if (_bookmarks.CapturesInput)
+            return changed;
 
         _formula.State.GetDefaultView(out double defaultCx, out double defaultCy, out double defaultScale);
         changed |= _navigation.HandleKeys(canvasWidth, canvasHeight, defaultCx, defaultCy, defaultScale);
@@ -259,6 +320,7 @@ public sealed class VisualizerHost : IDisposable
         changed |= _formula.HandleKeys(out bool viewResetNeeded, out bool interactive);
         if (viewResetNeeded)
         {
+            _bookmarks.ClearSelection();
             if (_formula.State.Family != prevFamily)
                 _juliaPreview.OnFamilyChanged(_navigation, _formula);
             else if (_formula.State.Julia != wasJulia)

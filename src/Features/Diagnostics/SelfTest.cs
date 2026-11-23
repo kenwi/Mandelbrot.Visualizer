@@ -1,4 +1,5 @@
 using System.Numerics;
+using Mandelbrot.Visualizer.Features.Bookmarks;
 using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Formula;
 using Mandelbrot.Visualizer.Features.JuliaPreview;
@@ -42,6 +43,7 @@ public static class SelfTest
         ok &= Report(JuliaPreviewValid(out string previewMsg), previewMsg, previewMsg);
         ok &= Report(JuliaClickMatrixValid(out string matrixMsg), matrixMsg, matrixMsg);
         ok &= Report(SsaaValid(out string ssaaMsg), ssaaMsg, ssaaMsg);
+        ok &= Report(BookmarksValid(out string bookmarksMsg), bookmarksMsg, bookmarksMsg);
 
         Console.WriteLine(ok ? "self-test passed" : "self-test failed");
         return ok;
@@ -1156,5 +1158,191 @@ public static class SelfTest
         }
 
         return sum / Math.Max(pairs, 1);
+    }
+
+    static bool BookmarksValid(out string message)
+    {
+        // 1. Verify BigFloat.ToDecimalString and FloatExp.ToScientificString deep-zoom round-trips.
+        const string deepReStr = "-0.000000000000000000000000000000502255232966173982226";
+        const string deepImStr = "0.9999999999999999999999999999995858203994014533105599";
+        if (!FloatExp.TryParse("1e-30", out FloatExp scale30)
+            || !FloatExp.TryParse("3.5e-400", out FloatExp scale400))
+        {
+            message = "FloatExp.TryParse failed for deep-zoom bookmark scales";
+            return false;
+        }
+
+        string scale400Text = scale400.ToScientificString();
+        if (!FloatExp.TryParse(scale400Text, out FloatExp scale400Back)
+            || Math.Abs(scale400.Log10() - scale400Back.Log10()) > 1e-4)
+        {
+            message = $"FloatExp.ToScientificString round-trip failed: {scale400Text}";
+            return false;
+        }
+
+        int prec = BigFloat.RequiredBits(scale30) + 64;
+        if (!BigFloat.TryParseDecimal(deepReStr, prec, out BigFloat parsedRe)
+            || !BigFloat.TryParseDecimal(deepImStr, prec, out BigFloat parsedIm))
+        {
+            message = "BigFloat.TryParseDecimal failed on 1e-30 minibrot coordinate";
+            return false;
+        }
+
+        int digits = BigFloat.RecommendedDecimalDigits(scale30);
+        string reOut = parsedRe.ToDecimalString(digits);
+        string imOut = parsedIm.ToDecimalString(digits);
+        if (!BigFloat.TryParseDecimal(reOut, prec, out BigFloat reBack)
+            || !BigFloat.TryParseDecimal(imOut, prec, out BigFloat imBack))
+        {
+            message = $"BigFloat.ToDecimalString produced unparseable output: {reOut}, {imOut}";
+            return false;
+        }
+
+        FloatExp errRe = BigFloat.Sub(parsedRe, reBack, prec).ToFloatExp().Abs();
+        FloatExp errIm = BigFloat.Sub(parsedIm, imBack, prec).ToFloatExp().Abs();
+        FloatExp tol = FloatExp.FromDouble(1e-36);
+        if (errRe > tol || errIm > tol)
+        {
+            message = $"BigFloat.ToDecimalString lost precision at 1e-30 (errRe={errRe.ToScientificString()}, errIm={errIm.ToScientificString()})";
+            return false;
+        }
+
+        // 2. Verify curated landmarks cover every fractal family (map + Julia) and parse cleanly.
+        List<BookmarkEntry> curated = CuratedBookmarks.CreateDefaults();
+        var mapFamilies = new HashSet<FractalFamily>();
+        var juliaFamilies = new HashSet<FractalFamily>();
+        bool hasDeepMinibrot = false;
+
+        foreach (BookmarkEntry entry in curated)
+        {
+            if (!entry.Curated || string.IsNullOrWhiteSpace(entry.Name))
+            {
+                message = "Curated bookmark missing Curated=true or Name";
+                return false;
+            }
+
+            if (!entry.TryParseView(out _, out _, out FloatExp s))
+            {
+                message = $"Curated bookmark '{entry.Name}' failed coordinate/scale parsing";
+                return false;
+            }
+
+            if (!Palette.TryParseName(entry.Palette, out _))
+            {
+                message = $"Curated bookmark '{entry.Name}' has invalid palette '{entry.Palette}'";
+                return false;
+            }
+
+            if (entry.Julia)
+                juliaFamilies.Add(entry.Family);
+            else
+                mapFamilies.Add(entry.Family);
+
+            if (s.Log10() <= -29.5)
+                hasDeepMinibrot = true;
+        }
+
+        foreach (FractalFamily fam in Enum.GetValues<FractalFamily>())
+        {
+            if (!mapFamilies.Contains(fam) || !juliaFamilies.Contains(fam))
+            {
+                message = $"Curated bookmarks missing map or Julia landmark for family {fam}";
+                return false;
+            }
+        }
+
+        if (!hasDeepMinibrot)
+        {
+            message = "Curated bookmarks missing a 1e-30 deep-zoom landmark";
+            return false;
+        }
+
+        // 3. Verify JSON seed, save (named + blank fallback), delete protection, reload, and apply.
+        string tempDir = Path.Combine(Path.GetTempPath(), $"mandelbrot-bookmarks-test-{Guid.NewGuid():N}");
+        string tempFile = Path.Combine(tempDir, "bookmarks.json");
+        try
+        {
+            var feature = new BookmarksFeature(tempFile);
+            if (!File.Exists(tempFile) || feature.Entries.Count != curated.Count)
+            {
+                message = "BookmarksFeature did not seed bookmarks.json with curated landmarks";
+                return false;
+            }
+
+            var deepView = new ViewportState(parsedRe, parsedIm, scale30);
+            var deepFormula = new FormulaParams(2, 1000, false, -0.8, 0.156, FractalFamily.Multibrot);
+            var deepColoring = ColoringParams.Default with { Palette = 2, Density = 1.4, NormalLighting = true, LightAngle = 90 };
+
+            BookmarkEntry named = feature.SaveCurrentSpot("My Deep Spot", deepView, deepFormula, false, deepColoring);
+            BookmarkEntry unnamed = feature.SaveCurrentSpot("   ", deepView, deepFormula, false, deepColoring);
+
+            if (named.Name != "My Deep Spot" || unnamed.Name.Length == 0 || !unnamed.Name.Contains("Mandelbrot", StringComparison.Ordinal))
+            {
+                message = $"Bookmark naming failed (named='{named.Name}', fallback='{unnamed.Name}')";
+                return false;
+            }
+
+            // Reload from disk and verify curated + user entries persisted.
+            var reloaded = new BookmarksFeature(tempFile);
+            if (reloaded.Entries.Count != curated.Count + 2
+                || reloaded.Entries[0].Name != unnamed.Name
+                || reloaded.Entries[1].Name != "My Deep Spot")
+            {
+                message = "BookmarksFeature JSON round-trip did not preserve user + curated bookmarks";
+                return false;
+            }
+
+            // Deleting a curated landmark must be refused; deleting a user bookmark must succeed.
+            if (reloaded.DeleteAt(reloaded.Entries.Count - 1) || !reloaded.DeleteAt(0))
+            {
+                message = "Bookmark deletion guard failed (curated protection or user delete)";
+                return false;
+            }
+
+            // Apply a curated bookmark and check navigation/formula/coloring state.
+            var nav = new NavigationFeature();
+            var formulaFeature = new FormulaFeature();
+            var coloringFeature = new ColoringFeature();
+            if (!reloaded.ApplyByName("Mini-brot (1e-30)", nav, formulaFeature, coloringFeature)
+                || nav.State.ScaleExact.Log10() > -29.5
+                || formulaFeature.State.MaxIterations != 1200)
+            {
+                message = "ApplyByName('Mini-brot (1e-30)') did not restore exact deep-zoom state";
+                return false;
+            }
+
+            // Verify forward and backward bookmark cycling with wrap-around.
+            reloaded.ClearSelection();
+            if (!reloaded.Cycle(+1, nav, formulaFeature, coloringFeature) || reloaded.SelectedIndex != 0
+                || !reloaded.Cycle(-1, nav, formulaFeature, coloringFeature) || reloaded.SelectedIndex != reloaded.Entries.Count - 1
+                || !reloaded.Cycle(+1, nav, formulaFeature, coloringFeature) || reloaded.SelectedIndex != 0)
+            {
+                message = "BookmarksFeature.Cycle did not wrap forward and backward across all entries";
+                return false;
+            }
+
+            // 4. Verify CLI command builder includes full-precision deep coords + active flags.
+            string cli = CliCommandBuilder.Build(deepView, deepFormula with { Family = FractalFamily.BurningShip, Julia = true, JuliaRe = -1.755, JuliaIm = 0.028 }, deepColoring, useGpu: false, SsaaMode.X2);
+            if (!cli.Contains("--fractal BurningShip", StringComparison.Ordinal)
+                || !cli.Contains("--center ", StringComparison.Ordinal)
+                || !cli.Contains("--scale 1e-30", StringComparison.Ordinal)
+                || !cli.Contains("--julia -1.755,0.028", StringComparison.Ordinal)
+                || !cli.Contains("--palette Electric", StringComparison.Ordinal)
+                || !cli.Contains("--lighting --angle 90", StringComparison.Ordinal)
+                || !cli.Contains("--ssaa 2x", StringComparison.Ordinal)
+                || !cli.Contains("--cpu", StringComparison.Ordinal))
+            {
+                message = $"CliCommandBuilder missing expected flags: {cli}";
+                return false;
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+                Directory.Delete(tempDir, recursive: true);
+        }
+
+        message = $"bookmarks slice valid ({curated.Count} curated landmarks across all 5 families + Julia, 1e-30/1e-400 round-trip, JSON & CLI builder)";
+        return true;
     }
 }

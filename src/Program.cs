@@ -29,6 +29,14 @@ double? previewCRe = null;
 double? previewCIm = null;
 bool matchZoom = false;
 SsaaMode ssaa = SsaaMode.Off;
+bool? julia = null;
+double? juliaRe = null;
+double? juliaIm = null;
+int? palette = null;
+ColoringMode? coloringMode = null;
+double? density = null;
+double? phase = null;
+string? bookmarkName = null;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -36,6 +44,9 @@ for (int i = 0; i < args.Length; i++)
     {
         case "--screenshot" when i + 1 < args.Length:
             screenshot = args[++i];
+            break;
+        case "--bookmark" when i + 1 < args.Length:
+            bookmarkName = args[++i];
             break;
         case "--center" when i + 1 < args.Length:
             centerArg = args[++i];
@@ -51,6 +62,33 @@ for (int i = 0; i < args.Length; i++)
         case "--iter" when i + 1 < args.Length:
             if (int.TryParse(args[++i], NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedIter))
                 maxIter = parsedIter;
+            break;
+        case "--julia" when i + 1 < args.Length:
+            string[] jparts = args[++i].Split(',', 2);
+            if (jparts.Length == 2
+                && double.TryParse(jparts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double jre)
+                && double.TryParse(jparts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double jim))
+            {
+                julia = true;
+                juliaRe = jre;
+                juliaIm = jim;
+            }
+            break;
+        case "--palette" when i + 1 < args.Length:
+            if (Palette.TryParseName(args[++i], out int parsedPalette))
+                palette = parsedPalette;
+            break;
+        case "--coloring" when i + 1 < args.Length:
+            if (Enum.TryParse<ColoringMode>(args[++i], true, out ColoringMode parsedColoring))
+                coloringMode = parsedColoring;
+            break;
+        case "--density" when i + 1 < args.Length:
+            if (double.TryParse(args[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedDensity))
+                density = parsedDensity;
+            break;
+        case "--phase" when i + 1 < args.Length:
+            if (double.TryParse(args[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedPhase))
+                phase = parsedPhase;
             break;
         case "--cpu":
             forceCpu = true;
@@ -136,7 +174,36 @@ if (centerArg != null)
     }
 }
 
-var options = new LaunchOptions(screenshot, centerX, centerY, scale, power, maxIter, forceCpu, normalLighting, orbitTrap, interior, cursorLight, lightX, lightY, lightAngle, fullscreen, family, juliaPreview, previewCRe, previewCIm, matchZoom, ssaa);
+var options = new LaunchOptions(
+    screenshot,
+    centerX,
+    centerY,
+    scale,
+    power,
+    maxIter,
+    forceCpu,
+    normalLighting,
+    orbitTrap,
+    interior,
+    cursorLight,
+    lightX,
+    lightY,
+    lightAngle,
+    fullscreen,
+    family,
+    juliaPreview,
+    previewCRe,
+    previewCIm,
+    matchZoom,
+    ssaa,
+    julia,
+    juliaRe,
+    juliaIm,
+    palette,
+    coloringMode,
+    density,
+    phase,
+    bookmarkName);
 using var host = new VisualizerHost(options);
 host.Run();
 return 0;

@@ -101,21 +101,19 @@ public sealed class ColoringFeature
         }
 
         bool lighting = State.NormalLighting;
-        if (layout.Check("3D lighting", ref lighting))
-        {
-            State = State with { NormalLighting = lighting };
-            changed = true;
-        }
-
-        if (!State.NormalLighting) RayGui.GuiDisable();
         bool cursorLight = State.CursorLight;
-        if (layout.Check("Mouse light", ref cursorLight))
+        if (layout.TwoChecks("3D lighting", ref lighting, "Mouse light", ref cursorLight, 0.50f))
         {
-            State = State with { CursorLight = cursorLight };
+            if (cursorLight && !State.CursorLight && !lighting)
+                lighting = true;
+            if (!lighting)
+                cursorLight = false;
+
+            State = State with { NormalLighting = lighting, CursorLight = cursorLight };
             changed = true;
         }
 
-        if (State.NormalLighting && State.CursorLight) RayGui.GuiDisable();
+        if (!State.NormalLighting || State.CursorLight) RayGui.GuiDisable();
         changed |= layout.LabeledSlider($"Angle   {State.LightAngle:0}d", State.LightAngle, 0, 360, value => State = State with { LightAngle = value });
         if (!State.NormalLighting || State.CursorLight) RayGui.GuiEnable();
 

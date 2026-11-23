@@ -17,6 +17,8 @@ public sealed class FormulaFeature
     public FormulaParams State { get; private set; } = FormulaParams.Default;
     public bool AutoIterations { get; private set; }
 
+    public void SetAutoIterations(bool enabled) => AutoIterations = enabled;
+
     public void SetFormula(FormulaParams formula)
     {
         State = formula;

@@ -167,6 +167,51 @@ public readonly struct BigFloat : IEquatable<BigFloat>
         return true;
     }
 
+    public static int RecommendedDecimalDigits(FloatExp scale)
+    {
+        if (scale.IsZero) return 64;
+        int depth = (int)Math.Ceiling(Math.Max(0.0, -scale.Log10()));
+        return Math.Clamp(depth + 10, 8, 1024);
+    }
+
+    public string ToDecimalString(int fractionalDigits)
+    {
+        fractionalDigits = Math.Clamp(fractionalDigits, 0, 2048);
+        if (IsZero) return "0";
+
+        bool negative = Mantissa.Sign < 0;
+        BigInteger abs = negative ? -Mantissa : Mantissa;
+        BigInteger tenPow = BigInteger.Pow(10, fractionalDigits);
+
+        BigInteger scaled;
+        if (Exponent >= 0)
+        {
+            scaled = (abs << Exponent) * tenPow;
+        }
+        else
+        {
+            int shift = -Exponent;
+            BigInteger num = abs * tenPow;
+            BigInteger half = BigInteger.One << (shift - 1);
+            scaled = (num + half) >> shift;
+        }
+
+        if (scaled.IsZero) return "0";
+
+        string digits = scaled.ToString(CultureInfo.InvariantCulture);
+        if (fractionalDigits == 0)
+            return negative ? "-" + digits : digits;
+
+        if (digits.Length <= fractionalDigits)
+            digits = new string('0', fractionalDigits - digits.Length + 1) + digits;
+
+        int split = digits.Length - fractionalDigits;
+        string intPart = digits[..split];
+        string fracPart = digits[split..].TrimEnd('0');
+        string sign = negative ? "-" : "";
+        return fracPart.Length == 0 ? $"{sign}{intPart}" : $"{sign}{intPart}.{fracPart}";
+    }
+
     public string FormatSummary()
     {
         double approx = ToDouble();
