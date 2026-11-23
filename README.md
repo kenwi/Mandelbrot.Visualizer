@@ -4,6 +4,18 @@ An interactive viewer for the Mandelbrot set and its relatives. Every pixel asks
 
 `n` can be any real number, not only 2. The panel edits the power, the iteration limit, the coloring, and whether you are looking at a Mandelbrot-style map or a Julia set. The picture can be drawn on the CPU or with a GPU shader.
 
+![Mandelbrot.Visualizer UI with live corner Julia preview and side panel controls](docs/screenshots/ui-julia-preview.png)
+
+## Gallery
+
+All captures below were rendered directly by `Mandelbrot.Visualizer` with automatic `4x` RGSS supersampling:
+
+| | |
+| :---: | :---: |
+| ![Mini-brot at 1e-30 zoom](docs/screenshots/deep-zoom-minibrot-1e30.png)<br>**Deep-zoom perturbation (`1.35e+30x`)** - `Mini-brot (1e-30)` bookmark rendered via `BigFloat` reference orbit + Zhuoran rebasing | ![Elephant Valley with 3D normal-map lighting](docs/screenshots/3d-lighting-elephant-valley.png)<br>**3D normal-map lighting** - `Elephant Valley` bookmark with `--lighting --angle 135` |
+| ![Julia Spiral with Cross orbit trap](docs/screenshots/orbit-trap-julia-spiral.png)<br>**Orbit traps & glow interior** - `Julia: Spiral` bookmark with `--trap cross --interior glow --palette Ocean` | ![Burning Ship Armada with 3D lighting](docs/screenshots/burning-ship-armada.png)<br>**Burning Ship family** - `Burning Ship: Armada` bookmark with `--lighting --angle 120` |
+| ![Tricorn Julia Crystalline Web](docs/screenshots/tricorn-julia-crystalline.png)<br>**Tricorn Julia set** - `Tricorn Julia: Crystalline Web` bookmark with 3D lighting | ![Celtic Julia Braided Cross](docs/screenshots/celtic-julia-braided.png)<br>**Celtic Julia set** - `Celtic Julia: Braided Cross` bookmark with 3D lighting |
+
 ## Capabilities
 
 - Switch between five fractal families (`Multibrot`, `Burning Ship`, `Tricorn`, `Celtic`, `Buffalo`) with full support for arbitrary power `n`, Julia sets, 3D lighting (2x2 real Jacobian normals), orbit traps, and cursor probing.
