@@ -22,6 +22,8 @@ public sealed class RenderingFeature : IDisposable
     bool _lastDeepPerturbation;
     bool _lastPrecisionLimit;
     bool _lastPrecisionLimitIsFamily;
+    bool _lastDrawnOnGpu;
+    bool _holdGpuUntilCpuReady;
 
     public bool UseGpu { get; private set; } = true;
     public bool UseSimd { get; private set; }
@@ -91,8 +93,8 @@ public sealed class RenderingFeature : IDisposable
 
     public void PrepareFrame(ColoringMode mode)
     {
-        if (!UsingGpu(mode))
-            _cpu.Upload();
+        if (!UsingGpu(mode) && _cpu.Upload())
+            _holdGpuUntilCpuReady = false;
     }
 
     public void DrawCanvas(
@@ -110,24 +112,44 @@ public sealed class RenderingFeature : IDisposable
 
         if (UsingGpu(coloring.Mode))
         {
+            if (!_lastDrawnOnGpu)
+            {
+                _cpu.CancelPending();
+                _hasSubmitted = false;
+            }
+
             ReferenceOrbit? orbit = wantsPerturb
                 ? _orbitCache.TryGetOrSchedule(view.CenterXExact, view.CenterYExact, view.ScaleExact, formula)
                 : null;
 
             if (wantsPerturb && orbit == null)
             {
-                // Reference orbit is computing off-thread; keep showing the last frame until ready.
-                _gpu.BlitCached(canvasWidth, canvasHeight);
+                // Reference orbit is computing off-thread; keep showing the most recently drawn frame until ready.
+                if (!_lastDrawnOnGpu && _cpu.HasImage)
+                    _cpu.Draw(canvasWidth, canvasHeight);
+                else
+                    _gpu.BlitCached(canvasWidth, canvasHeight);
                 return;
             }
 
             _submittedOrbit = orbit;
             var request = new RenderRequest(canvasWidth, canvasHeight, view, formula, coloring, false, finalQuality);
             _gpu.Draw(canvasWidth, canvasHeight, request, orbit);
+            _lastDrawnOnGpu = _gpu.HasImage;
+            _holdGpuUntilCpuReady = false;
         }
         else
         {
-            _cpu.Draw(canvasWidth, canvasHeight);
+            if (_lastDrawnOnGpu)
+            {
+                _lastDrawnOnGpu = false;
+                _holdGpuUntilCpuReady = _gpu.HasImage && !_cpu.MatchesUploadedScene(view, formula, coloring);
+            }
+
+            if (_holdGpuUntilCpuReady && _gpu.HasImage)
+                _gpu.BlitCached(canvasWidth, canvasHeight);
+            else
+                _cpu.Draw(canvasWidth, canvasHeight);
         }
     }
 
@@ -168,6 +190,14 @@ public sealed class RenderingFeature : IDisposable
         if (_hasSubmitted && request == _submitted && ReferenceEquals(_submittedOrbit, orbit))
             return;
 
+        if (_cpu.HasUploadedRequest(request, orbit))
+        {
+            _submitted = request;
+            _submittedOrbit = orbit;
+            _hasSubmitted = true;
+            return;
+        }
+
         _submitted = request;
         _submittedOrbit = orbit;
         _hasSubmitted = true;
@@ -187,7 +217,8 @@ public sealed class RenderingFeature : IDisposable
 
     public void Save(string path, ColoringMode mode)
     {
-        IFractalBackend backend = UsingGpu(mode) && _gpu.HasImage ? _gpu : _cpu;
+        bool useGpuImage = (UsingGpu(mode) || _holdGpuUntilCpuReady) && _gpu.HasImage;
+        IFractalBackend backend = useGpuImage ? _gpu : _cpu;
         backend.Save(path);
     }
 

@@ -534,6 +534,25 @@ public static class SelfTest
             return false;
         }
 
+        // Verify FormulaParams.IsSymmetricAcrossRealAxis accounts for Julia Im(c):
+        // Julia sets with Im(c) != 0 have point symmetry (-z) rather than real-axis mirror symmetry (conj z).
+        var juliaComplex = new FormulaParams(2, 250, true, -1.558625, -0.039375, FractalFamily.Multibrot);
+        var juliaReal = new FormulaParams(2, 250, true, -1.558625, 0.0, FractalFamily.Multibrot);
+        if (juliaComplex.IsSymmetricAcrossRealAxis || !juliaReal.IsSymmetricAcrossRealAxis)
+        {
+            message = "IsSymmetricAcrossRealAxis must be false for Julia sets with non-zero Im(c) and true when Im(c) == 0";
+            return false;
+        }
+
+        var jTop = MultibrotFormula.Evaluate(0.25, 0.15, juliaComplex.JuliaRe, juliaComplex.JuliaIm, 2, 250, true);
+        var jBot = MultibrotFormula.Evaluate(0.25, -0.15, juliaComplex.JuliaRe, juliaComplex.JuliaIm, 2, 250, true);
+        var jOpp = MultibrotFormula.Evaluate(-0.25, -0.15, juliaComplex.JuliaRe, juliaComplex.JuliaIm, 2, 250, true);
+        if (Math.Abs(jTop.Mu - jBot.Mu) < 1e-3 || Math.Abs(jTop.Mu - jOpp.Mu) > 1e-5)
+        {
+            message = $"Julia set at c={juliaComplex.JuliaRe}{juliaComplex.JuliaIm}i must match 180-deg point symmetry, not real-axis mirror";
+            return false;
+        }
+
         message = "all 5 fractal families valid across scalar, probe, symmetry, and 2x2 Jacobian lighting";
         return true;
     }

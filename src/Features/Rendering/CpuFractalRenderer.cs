@@ -37,6 +37,10 @@ public sealed class CpuFractalRenderer : IFractalBackend
     Color[]? _uploadPixels;
     int _readyWidth;
     int _readyHeight;
+    RenderRequest? _readyRequest;
+    ReferenceOrbit? _readyOrbit;
+    RenderRequest? _uploadedRequest;
+    ReferenceOrbit? _uploadedOrbit;
 
     float[]? _mu;
     float[]? _minRadius;
@@ -55,6 +59,37 @@ public sealed class CpuFractalRenderer : IFractalBackend
     public bool HasImage => _hasTexture;
     public bool HasFrameTime { get; private set; }
     public double LastFrameMs { get; private set; }
+
+    public bool MatchesUploadedScene(in ViewportState view, in FormulaParams formula, in ColoringParams coloring)
+        => _hasTexture
+        && _uploadedRequest is RenderRequest uploaded
+        && uploaded.View == view
+        && uploaded.Formula == formula
+        && uploaded.Coloring == coloring;
+
+    public bool HasUploadedRequest(in RenderRequest request, ReferenceOrbit? orbit)
+        => _hasTexture
+        && _uploadedRequest is RenderRequest uploaded
+        && uploaded == request
+        && ReferenceEquals(_uploadedOrbit, orbit);
+
+    public void CancelPending()
+    {
+        lock (_gate)
+        {
+            _generation++;
+            _latest = null;
+            _latestOrbit = null;
+            if (_readyPixels != null)
+            {
+                _sparePixels = _readyPixels;
+                _readyPixels = null;
+            }
+
+            _readyRequest = null;
+            _readyOrbit = null;
+        }
+    }
 
     public void Request(RenderRequest request, ReferenceOrbit? referenceOrbit = null)
     {
@@ -91,15 +126,21 @@ public sealed class CpuFractalRenderer : IFractalBackend
         Color[]? pixels = Compute(request, orbit, generation);
         lock (_gate)
         {
-            if (pixels != null)
+            if (pixels != null && _generation == generation)
             {
                 if (_readyPixels != null)
                     _sparePixels = _readyPixels;
                 _readyPixels = pixels;
                 _readyWidth = request.Width;
                 _readyHeight = request.Height;
+                _readyRequest = request;
+                _readyOrbit = orbit;
                 LastFrameMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
                 HasFrameTime = true;
+            }
+            else if (pixels != null)
+            {
+                _sparePixels = pixels;
             }
 
             _running = false;
@@ -300,19 +341,25 @@ public sealed class CpuFractalRenderer : IFractalBackend
         return Volatile.Read(ref abandoned) == 0 && Volatile.Read(ref _generation) == generation;
     }
 
-    public void Upload()
+    public bool Upload()
     {
         Color[]? pixels;
         int width;
         int height;
+        RenderRequest? uploadedRequest;
+        ReferenceOrbit? uploadedOrbit;
         lock (_gate)
         {
             pixels = _readyPixels;
-            if (pixels == null) return;
+            if (pixels == null) return false;
 
             width = _readyWidth;
             height = _readyHeight;
+            uploadedRequest = _readyRequest;
+            uploadedOrbit = _readyOrbit;
             _readyPixels = null;
+            _readyRequest = null;
+            _readyOrbit = null;
             if (_uploadPixels != null)
                 _sparePixels = _uploadPixels;
             _uploadPixels = pixels;
@@ -324,6 +371,10 @@ public sealed class CpuFractalRenderer : IFractalBackend
             fixed (Color* pointer = pixels)
                 Raylib.UpdateTexture(_texture, pointer);
         }
+
+        _uploadedRequest = uploadedRequest;
+        _uploadedOrbit = uploadedOrbit;
+        return true;
     }
 
     public void Draw(int canvasWidth, int canvasHeight)

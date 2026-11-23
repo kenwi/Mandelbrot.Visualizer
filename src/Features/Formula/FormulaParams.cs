@@ -45,7 +45,9 @@ public readonly record struct FormulaParams(
         _ => "z  =  z^n  +  c",
     };
 
-    public bool IsSymmetricAcrossRealAxis => Family is FractalFamily.Multibrot or FractalFamily.Tricorn or FractalFamily.Celtic;
+    public bool IsSymmetricAcrossRealAxis =>
+        Family is FractalFamily.Multibrot or FractalFamily.Tricorn or FractalFamily.Celtic
+        && (!Julia || Math.Abs(JuliaIm) < 1e-15);
 
     public void GetDefaultView(out double centerX, out double centerY, out double scale)
     {
