@@ -91,14 +91,20 @@ public sealed class RenderingFeature : IDisposable
             changed = true;
         }
 
+        changed |= DrawSsaaCombo(ref layout);
+        return changed;
+    }
+
+    public bool DrawSsaaCombo(ref PanelLayout layout)
+    {
         int ssaa = (int)Ssaa;
         if (layout.LabeledCombo("SSAA", SsaaPattern.ComboItems, ref ssaa))
         {
             Ssaa = (SsaaMode)ssaa;
-            changed = true;
+            return true;
         }
 
-        return changed;
+        return false;
     }
 
     public void PrepareFrame(ColoringMode mode)

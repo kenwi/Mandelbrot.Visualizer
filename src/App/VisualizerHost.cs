@@ -1,9 +1,11 @@
+using System.Numerics;
 using Mandelbrot.Visualizer.Features.Bookmarks;
 using Mandelbrot.Visualizer.Features.Capture;
 using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Diagnostics;
 using Mandelbrot.Visualizer.Features.Formula;
 using Mandelbrot.Visualizer.Features.JuliaPreview;
+using Mandelbrot.Visualizer.Features.Mandelbulb;
 using Mandelbrot.Visualizer.Features.Navigation;
 using Mandelbrot.Visualizer.Features.Rendering;
 using Mandelbrot.Visualizer.Shared;
@@ -40,7 +42,21 @@ public sealed record LaunchOptions(
     ColoringMode? ColoringMode = null,
     double? Density = null,
     double? Phase = null,
-    string? BookmarkName = null);
+    string? BookmarkName = null,
+    bool Mandelbulb = false,
+    OrbitCameraState? BulbCamera = null,
+    double? BulbDetail = null,
+    Vector3? BulbJuliaC = null,
+    bool? BulbShadows = null,
+    bool BulbFly = false,
+    Vector3? BulbPos = null,
+    Vector3? BulbYprDeg = null,
+    Vector3? BulbTarget = null,
+    string? BulbSpotName = null,
+    BulbShape? BulbShape = null,
+    double? BoxScale = null,
+    double? BoxMinRadius = null,
+    double? BoxFoldLimit = null);
 
 /// <summary>
 /// Thin application shell owning the Raylib window lifecycle and frame loop,
@@ -56,6 +72,7 @@ public sealed class VisualizerHost : IDisposable
     readonly DiagnosticsFeature _diagnostics = new();
     readonly JuliaPreviewFeature _juliaPreview = new();
     readonly BookmarksFeature _bookmarks = new();
+    readonly MandelbulbFeature _mandelbulb = new();
     readonly SidePanel _panel = new();
     readonly bool _fixedLight;
     readonly bool _startFullscreen;
@@ -117,7 +134,62 @@ public sealed class VisualizerHost : IDisposable
             });
         }
 
-        if (options.Power.HasValue
+        if (options.Mandelbulb)
+        {
+            _mandelbulb.SetActive(true);
+            if (!string.IsNullOrWhiteSpace(options.BulbSpotName))
+                _mandelbulb.ApplyLandmarkByName(options.BulbSpotName, _coloring);
+
+            if (options.BulbShape.HasValue)
+                _mandelbulb.SetShape(options.BulbShape.Value, resetCamera: !options.BulbCamera.HasValue && !options.BulbPos.HasValue);
+
+            MandelbulbParams bulb = _mandelbulb.State;
+            _mandelbulb.SetParams(bulb with
+            {
+                Power = options.Power.HasValue ? MandelbulbParams.ClampPower(options.Power.Value) : bulb.Power,
+                Iterations = options.MaxIterations.HasValue ? MandelbulbParams.ClampIterations(options.MaxIterations.Value) : bulb.Iterations,
+                Detail = options.BulbDetail ?? bulb.Detail,
+                SoftShadows = options.BulbShadows ?? bulb.SoftShadows,
+                Julia = options.BulbJuliaC.HasValue || bulb.Julia,
+                JuliaC = options.BulbJuliaC ?? bulb.JuliaC,
+                BoxScale = options.BoxScale.HasValue ? MandelbulbParams.ClampBoxScale(options.BoxScale.Value) : bulb.BoxScale,
+                BoxMinRadius = options.BoxMinRadius.HasValue ? MandelbulbParams.ClampBoxMinRadius(options.BoxMinRadius.Value) : bulb.BoxMinRadius,
+                BoxFoldLimit = options.BoxFoldLimit.HasValue ? MandelbulbParams.ClampBoxFoldLimit(options.BoxFoldLimit.Value) : bulb.BoxFoldLimit,
+            });
+            if (options.BulbCamera.HasValue || options.BulbTarget.HasValue)
+            {
+                OrbitCameraState cam = options.BulbCamera ?? _mandelbulb.Camera;
+                if (options.BulbTarget.HasValue)
+                    cam = cam with { Target = options.BulbTarget.Value };
+                _mandelbulb.SetCamera(cam);
+            }
+            if (options.BulbFly || options.BulbPos.HasValue || options.BulbYprDeg.HasValue)
+            {
+                if (options.BulbPos.HasValue || options.BulbYprDeg.HasValue)
+                {
+                    CameraPose basePose = _mandelbulb.ActivePose;
+                    Vector3 pos = options.BulbPos ?? basePose.Position;
+                    CameraPose flyPose;
+                    if (options.BulbYprDeg.HasValue)
+                    {
+                        const float degToRad = MathF.PI / 180f;
+                        Vector3 ypr = options.BulbYprDeg.Value;
+                        flyPose = CameraPose.FromYawPitchRoll(pos, ypr.X * degToRad, ypr.Y * degToRad, ypr.Z * degToRad, basePose.FovDegrees);
+                    }
+                    else
+                    {
+                        flyPose = CameraPose.FromLookAt(pos, Vector3.Zero, Vector3.UnitY, basePose.FovDegrees);
+                    }
+
+                    _mandelbulb.SetFlyPose(flyPose);
+                }
+                else
+                {
+                    _mandelbulb.SetCameraMode(BulbCameraMode.Fly);
+                }
+            }
+        }
+        else if (options.Power.HasValue
             || options.MaxIterations.HasValue
             || options.Family.HasValue
             || options.Julia.HasValue
@@ -166,6 +238,7 @@ public sealed class VisualizerHost : IDisposable
         MouseClickLatch.Install();
         PanelTheme.Apply();
         _rendering.Load();
+        _mandelbulb.Load();
         _capture.StartClock();
 
         while (!Raylib.WindowShouldClose() && !_quit)
@@ -180,23 +253,38 @@ public sealed class VisualizerHost : IDisposable
             _capture.TrackWindowSize(screenWidth, screenHeight);
 
             bool dirty = HandleInput(canvasWidth, canvasHeight, out bool pointerOverPreview);
-            dirty |= _formula.SyncAutoIterations(_navigation.State.ScaleExact);
-            if (!_fixedLight)
+            bool is3d = _mandelbulb.Active;
+            if (!is3d)
             {
-                bool hasCursorPos = _navigation.TryGetLastCursorNormalized(canvasWidth, canvasHeight, out float lightX, out float lightY);
-                dirty |= _coloring.SyncCursorLight(hasCursorPos, lightX, lightY);
+                dirty |= _formula.SyncAutoIterations(_navigation.State.ScaleExact);
+                if (!_fixedLight)
+                {
+                    bool hasCursorPos = _navigation.TryGetLastCursorNormalized(canvasWidth, canvasHeight, out float lightX, out float lightY);
+                    dirty |= _coloring.SyncCursorLight(hasCursorPos, lightX, lightY);
+                }
             }
-            bool finalQuality = _capture.ForceFinalQuality || !_navigation.IsInteracting;
 
-            _rendering.PrepareFrame(_coloring.State.Mode);
+            bool finalQuality = _capture.ForceFinalQuality || (is3d ? !_mandelbulb.IsInteracting : !_navigation.IsInteracting);
+
+            if (!is3d)
+                _rendering.PrepareFrame(_coloring.State.Mode);
 
             Raylib.BeginDrawing();
             Raylib.ClearBackground(PanelTheme.CanvasBackground);
-            _rendering.DrawCanvas(canvasWidth, canvasHeight, _navigation.State, _formula.State, _coloring.State, finalQuality);
-            _juliaPreview.DrawOverlay(canvasWidth, canvasHeight, _navigation.State, _formula.State, _coloring.State, _rendering, pointerOverPreview);
+            if (is3d)
+            {
+                _mandelbulb.DrawCanvas(canvasWidth, canvasHeight, _coloring.State, finalQuality, _rendering.Ssaa);
+                if (!_panel.Visible)
+                    _mandelbulb.DrawHud(_rendering.Ssaa, _diagnostics.ShowFrameTime);
+            }
+            else
+            {
+                _rendering.DrawCanvas(canvasWidth, canvasHeight, _navigation.State, _formula.State, _coloring.State, finalQuality);
+                _juliaPreview.DrawOverlay(canvasWidth, canvasHeight, _navigation.State, _formula.State, _coloring.State, _rendering, pointerOverPreview);
 
-            if (!_panel.Visible)
-                _diagnostics.DrawHud(canvasWidth, canvasHeight, _formula.State, _coloring.State.Mode, _navigation, _rendering);
+                if (!_panel.Visible)
+                    _diagnostics.DrawHud(canvasWidth, canvasHeight, _formula.State, _coloring.State.Mode, _navigation, _rendering);
+            }
 
             dirty |= _panel.Draw(
                 screenWidth,
@@ -210,34 +298,54 @@ public sealed class VisualizerHost : IDisposable
                 _capture,
                 _diagnostics,
                 _juliaPreview,
-                _bookmarks);
+                _bookmarks,
+                _mandelbulb);
 
-            if (_bookmarks.DrawOverlay(screenWidth, screenHeight, canvasWidth, _navigation, _formula, _coloring, _panel.EditScope))
+            if (_mandelbulb.Active)
+            {
+                if (_mandelbulb.DrawBookmarksOverlay(screenWidth, screenHeight, canvasWidth, _coloring, _panel.EditScope))
+                    dirty = true;
+            }
+            else if (_bookmarks.DrawOverlay(screenWidth, screenHeight, canvasWidth, _navigation, _formula, _coloring, _panel.EditScope))
             {
                 _juliaPreview.ClearReturnView();
                 dirty = true;
             }
 
-            dirty |= _formula.SyncAutoIterations(_navigation.State.ScaleExact);
-            _capture.CaptureWindowIfReady(_rendering, _coloring.State.Mode);
+            is3d = _mandelbulb.Active;
+            if (!is3d)
+                dirty |= _formula.SyncAutoIterations(_navigation.State.ScaleExact);
+
+            Func<bool> captureReady = is3d
+                ? () => _mandelbulb.IsReadyForCapture(_rendering.Ssaa)
+                : () => _rendering.IsReadyForCapture(_coloring.State.Mode);
+            Action<string> captureSave = is3d
+                ? _mandelbulb.Save
+                : path => _rendering.Save(path, _coloring.State.Mode);
+
+            _capture.CaptureWindowIfReady(captureReady);
             Raylib.EndDrawing();
 
-            _capture.FlushPendingInteractiveSave(_rendering, _coloring.State.Mode);
+            _capture.FlushPendingInteractiveSave(_rendering, captureReady, captureSave);
 
-            _rendering.SubmitIfNeeded(
-                canvasWidth,
-                canvasHeight,
-                _navigation.State,
-                _formula.State,
-                _coloring.State,
-                finalQuality || _capture.ForceFinalQuality,
-                dirty);
+            if (!is3d)
+            {
+                _rendering.SubmitIfNeeded(
+                    canvasWidth,
+                    canvasHeight,
+                    _navigation.State,
+                    _formula.State,
+                    _coloring.State,
+                    finalQuality || _capture.ForceFinalQuality,
+                    dirty);
+            }
 
-            if (_capture.ShouldExitAfterFrame(_rendering, _coloring.State.Mode))
+            if (_capture.ShouldExitAfterFrame(captureSave))
                 break;
         }
 
         MouseClickLatch.Uninstall();
+        _mandelbulb.Dispose();
         _juliaPreview.Dispose();
         _rendering.Dispose();
         Raylib.CloseWindow();
@@ -245,8 +353,10 @@ public sealed class VisualizerHost : IDisposable
 
     bool HandleInput(int canvasWidth, int canvasHeight, out bool pointerOverPreview)
     {
-        if (_bookmarks.CapturesInput)
+        if (_mandelbulb.CapturesInput || (!_mandelbulb.Active && _bookmarks.CapturesInput))
         {
+            if (_mandelbulb.CapturesInput)
+                _mandelbulb.StopMotion();
             pointerOverPreview = false;
             return false;
         }
@@ -257,6 +367,79 @@ public sealed class VisualizerHost : IDisposable
                 _panel.EditScope.CancelAll();
             else
                 _quit = true;
+        }
+
+        if (_mandelbulb.Active)
+        {
+            pointerOverPreview = false;
+            bool changed3d = _mandelbulb.HandlePointer(canvasWidth, canvasHeight);
+            if (_panel.EditScope.CapturesKeyboard)
+            {
+                _mandelbulb.StopMotion();
+                return changed3d;
+            }
+
+            if (Raylib.IsKeyPressed(KeyboardKey.KEY_H))
+            {
+                _panel.Visible = !_panel.Visible;
+                if (!_panel.Visible)
+                    _mandelbulb.DismissPopups();
+            }
+
+            if (Raylib.IsKeyPressed(KeyboardKey.KEY_F11))
+                Raylib.ToggleFullscreen();
+
+            if (_mandelbulb.HandleBookmarkKeys(_coloring))
+                return true;
+            if (_mandelbulb.CapturesInput)
+            {
+                _mandelbulb.StopMotion();
+                return changed3d;
+            }
+
+            changed3d |= _mandelbulb.HandleKeys(out _);
+            if (!_mandelbulb.Active)
+            {
+                _panel.EditScope.CancelAll();
+                return true;
+            }
+
+            if (Raylib.IsKeyPressed(KeyboardKey.KEY_C))
+            {
+                _coloring.SetColoring(_coloring.State with { Palette = (_coloring.State.Palette + 1) % Palette.Count });
+                changed3d = true;
+            }
+
+            string bulbTitle = _mandelbulb.SelectedBookmarkName ?? _mandelbulb.State.CaptureStem;
+
+            if (_mandelbulb.IsFlyMode)
+            {
+                // In 6DOF Fly mode, A and S drive strafe-left and thrust-back; use F2 for PNG capture.
+                if (Raylib.IsKeyPressed(KeyboardKey.KEY_F2))
+                {
+                    changed3d |= _capture.SaveInteractive(
+                        _rendering,
+                        () => _mandelbulb.IsReadyForCapture(_rendering.Ssaa),
+                        _mandelbulb.Save,
+                        bulbTitle);
+                }
+            }
+            else
+            {
+                if (Raylib.IsKeyPressed(KeyboardKey.KEY_A))
+                {
+                    _rendering.SetSsaa((SsaaMode)(((int)_rendering.Ssaa + 1) % SsaaPattern.ModeCount));
+                    changed3d = true;
+                }
+
+                changed3d |= _capture.HandleKeys(
+                    _rendering,
+                    () => _mandelbulb.IsReadyForCapture(_rendering.Ssaa),
+                    _mandelbulb.Save,
+                    bulbTitle);
+            }
+
+            return changed3d;
         }
 
         pointerOverPreview = _juliaPreview.IsPointerOverCard(canvasWidth, canvasHeight, _formula.State);
@@ -305,6 +488,13 @@ public sealed class VisualizerHost : IDisposable
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_F11))
             Raylib.ToggleFullscreen();
 
+        if (_mandelbulb.HandleKeys(out _))
+        {
+            _panel.EditScope.CancelAll();
+            _bookmarks.DismissPopups();
+            return true;
+        }
+
         if (_bookmarks.HandleKeys(_navigation, _formula, _coloring))
         {
             _juliaPreview.ClearReturnView();
@@ -341,6 +531,7 @@ public sealed class VisualizerHost : IDisposable
 
     public void Dispose()
     {
+        _mandelbulb.Dispose();
         _juliaPreview.Dispose();
         _rendering.Dispose();
     }

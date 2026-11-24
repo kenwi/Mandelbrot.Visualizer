@@ -4,6 +4,7 @@ using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Diagnostics;
 using Mandelbrot.Visualizer.Features.Formula;
 using Mandelbrot.Visualizer.Features.JuliaPreview;
+using Mandelbrot.Visualizer.Features.Mandelbulb;
 using Mandelbrot.Visualizer.Features.Navigation;
 using Mandelbrot.Visualizer.Features.Rendering;
 using Mandelbrot.Visualizer.Shared;
@@ -34,12 +35,13 @@ public sealed class SidePanel
         CaptureFeature capture,
         DiagnosticsFeature diagnostics,
         JuliaPreviewFeature juliaPreview,
-        BookmarksFeature bookmarks)
+        BookmarksFeature bookmarks,
+        MandelbulbFeature mandelbulb)
     {
         if (!Visible)
             return false;
 
-        bool panelBlocked = bookmarks.CapturesInput;
+        bool panelBlocked = mandelbulb.Active ? mandelbulb.CapturesInput : bookmarks.CapturesInput;
         if (panelBlocked)
             RayGui.GuiDisable();
 
@@ -50,12 +52,95 @@ public sealed class SidePanel
         var layout = new PanelLayout(screenWidth - Width + 16, 14, Width - 32);
         bool changed = false;
 
-        layout.Title("Multibrot");
-        layout.Label(formula.State.FormulaSubtitle, 22);
+        layout.Title(mandelbulb.Active
+            ? (mandelbulb.State.Shape == BulbShape.Mandelbox ? "Mandelbox 3D" : "Mandelbulb 3D")
+            : "Multibrot");
+        layout.Label(mandelbulb.Active ? mandelbulb.State.Subtitle : formula.State.FormulaSubtitle, 22);
 
-        changed |= rendering.DrawPanel(ref layout);
-        changed |= diagnostics.DrawToggle(ref layout);
+        if (mandelbulb.Active)
+            changed |= rendering.DrawSsaaCombo(ref layout);
+        else
+            changed |= rendering.DrawPanel(ref layout);
+
+        bool showFrameTime = diagnostics.ShowFrameTime;
+        bool bulbActive = mandelbulb.Active;
+        if (layout.TwoChecks("Frame time", ref showFrameTime, "3D Bulb", ref bulbActive, splitRatio: 0.56f))
+        {
+            diagnostics.SetShowFrameTime(showFrameTime);
+            if (bulbActive != mandelbulb.Active)
+            {
+                EditScope.CancelAll();
+                bookmarks.DismissPopups();
+                mandelbulb.SetActive(bulbActive);
+            }
+            changed = true;
+        }
+
         layout.Separator();
+
+        if (mandelbulb.Active)
+        {
+            changed |= mandelbulb.DrawPanel(ref layout, EditScope);
+            layout.Separator();
+            changed |= coloring.DrawPanel3D(ref layout);
+            layout.Space(2);
+
+            if (panelBlocked)
+                RayGui.GuiEnable();
+
+            mandelbulb.DrawBookmarksPanel(ref layout, coloring.State, rendering.Ssaa, EditScope);
+
+            if (panelBlocked)
+                RayGui.GuiDisable();
+
+            string save3dLabel = capture.IsSavingInteractive
+                ? $"Saving {SsaaPattern.ShortLabel(SsaaPattern.Highest)}..."
+                : "Save PNG";
+            layout.TwoButtons("Reset view", save3dLabel, out bool reset3d, out bool save3d);
+            if (!panelBlocked && reset3d)
+            {
+                EditScope.CancelAll();
+                mandelbulb.Bookmarks.ClearSelection();
+                mandelbulb.ResetView();
+                changed = true;
+            }
+
+            if (!panelBlocked && save3d)
+            {
+                string title = mandelbulb.SelectedBookmarkName ?? mandelbulb.State.CaptureStem;
+                changed |= capture.SaveInteractive(
+                    rendering,
+                    () => mandelbulb.IsReadyForCapture(rendering.Ssaa),
+                    mandelbulb.Save,
+                    title);
+            }
+
+            layout.Separator();
+            mandelbulb.DrawTelemetry(ref layout, rendering.Ssaa, diagnostics.ShowFrameTime);
+
+            layout.Space(4);
+            if (mandelbulb.IsFlyMode)
+            {
+                layout.Hint("WASD move   Space/Ctrl up/down");
+                layout.Hint("LMB look  Q/E or RMB roll  MMB strafe");
+                layout.Hint("Wheel speed   Shift boost   Alt slow");
+                layout.Hint("F orbit  M shape  X level  B save");
+                layout.Hint(", . spot  [ ] param  - + iter  F2 png");
+            }
+            else
+            {
+                layout.Hint("Drag orbit   RMB/Shift drag pan");
+                layout.Hint("Wheel/dbl-click zoom   arrows orbit");
+                layout.Hint("F 6dof fly  M shape  B save  , . spot");
+                layout.Hint("[ ] param  - + iter  C pal  A ssaa");
+                layout.Hint("3 2D/3D  J julia  L shadow  S png");
+            }
+
+            if (panelBlocked)
+                RayGui.GuiEnable();
+
+            return !panelBlocked && changed;
+        }
 
         changed |= formula.DrawPowerAndIterations(ref layout, EditScope, out bool familyChanged);
         changed |= coloring.DrawPanel(ref layout);
@@ -113,8 +198,8 @@ public sealed class SidePanel
         layout.Hint("Drag/arrows pan  wheel/dbl-click zoom");
         layout.Hint("[ ] power  - + iter  C palette  F fractal");
         layout.Hint("R reset  J julia  P preview  B save  , . spot");
-        layout.Hint("L 3d  M light  T trap  A ssaa  G gpu");
-        layout.Hint("RMB / Space julia  H panel  S save");
+        layout.Hint("L 3d  M light  T trap  A ssaa  3 bulb");
+        layout.Hint("RMB / Space julia  G gpu  H panel  S save");
 
         if (panelBlocked)
             RayGui.GuiEnable();

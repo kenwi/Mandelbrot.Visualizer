@@ -30,6 +30,8 @@ public sealed class DiagnosticsFeature
 
     public bool ShowFrameTime { get; private set; }
 
+    public void SetShowFrameTime(bool value) => ShowFrameTime = value;
+
     public bool DrawToggle(ref PanelLayout layout)
     {
         bool show = ShowFrameTime;

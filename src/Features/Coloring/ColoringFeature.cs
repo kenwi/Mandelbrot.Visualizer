@@ -119,4 +119,22 @@ public sealed class ColoringFeature
 
         return changed;
     }
+
+    public bool DrawPanel3D(ref PanelLayout layout)
+    {
+        bool changed = false;
+
+        int palette = State.Palette;
+        if (layout.LabeledCombo("Palette", Palette.ComboItems, ref palette))
+        {
+            State = State with { Palette = palette };
+            changed = true;
+        }
+
+        changed |= layout.LabeledSlider($"Density {State.Density:0.00}", State.Density, 0.25, 4, value => State = State with { Density = value });
+        changed |= layout.LabeledSlider($"Phase   {State.Phase:0.00}", State.Phase, 0, 1, value => State = State with { Phase = value });
+        changed |= layout.LabeledSlider($"Light   {State.LightAngle:0}d", State.LightAngle, 0, 360, value => State = State with { LightAngle = value });
+
+        return changed;
+    }
 }

@@ -53,9 +53,12 @@ public sealed class CaptureFeature(string? screenshotPath)
     }
 
     public bool HandleKeys(RenderingFeature rendering, ColoringMode mode, string? bookmarkName = null)
+        => HandleKeys(rendering, () => rendering.IsReadyForCapture(mode), path => rendering.Save(path, mode), bookmarkName);
+
+    public bool HandleKeys(RenderingFeature rendering, Func<bool> isReady, Action<string> save, string? captureTitle = null)
     {
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_S))
-            return SaveInteractive(rendering, mode, bookmarkName);
+            return SaveInteractive(rendering, isReady, save, captureTitle);
 
         return false;
     }
@@ -112,9 +115,12 @@ public sealed class CaptureFeature(string? screenshotPath)
     }
 
     public bool SaveInteractive(RenderingFeature rendering, ColoringMode mode, string? bookmarkName = null)
+        => SaveInteractive(rendering, () => rendering.IsReadyForCapture(mode), path => rendering.Save(path, mode), bookmarkName);
+
+    public bool SaveInteractive(RenderingFeature rendering, Func<bool> isReady, Action<string> save, string? captureTitle = null)
     {
         Directory.CreateDirectory("captures");
-        string path = BuildInteractiveCapturePath(bookmarkName);
+        string path = BuildInteractiveCapturePath(captureTitle);
         bool boosted = false;
         if (rendering.Ssaa != SsaaPattern.Highest)
         {
@@ -123,10 +129,10 @@ public sealed class CaptureFeature(string? screenshotPath)
             boosted = true;
         }
 
-        if (!boosted && rendering.IsReadyForCapture(mode))
+        if (!boosted && isReady())
         {
             _pendingInteractivePath = null;
-            rendering.Save(path, mode);
+            save(path);
             RestoreSsaaIfNeeded(rendering);
             return false;
         }
@@ -136,13 +142,16 @@ public sealed class CaptureFeature(string? screenshotPath)
     }
 
     public bool FlushPendingInteractiveSave(RenderingFeature rendering, ColoringMode mode)
+        => FlushPendingInteractiveSave(rendering, () => rendering.IsReadyForCapture(mode), path => rendering.Save(path, mode));
+
+    public bool FlushPendingInteractiveSave(RenderingFeature rendering, Func<bool> isReady, Action<string> save)
     {
-        if (_pendingInteractivePath == null || !rendering.IsReadyForCapture(mode))
+        if (_pendingInteractivePath == null || !isReady())
             return false;
 
         string path = _pendingInteractivePath;
         _pendingInteractivePath = null;
-        rendering.Save(path, mode);
+        save(path);
         return RestoreSsaaIfNeeded(rendering);
     }
 
@@ -163,8 +172,11 @@ public sealed class CaptureFeature(string? screenshotPath)
     }
 
     public void CaptureWindowIfReady(RenderingFeature rendering, ColoringMode mode)
+        => CaptureWindowIfReady(() => rendering.IsReadyForCapture(mode));
+
+    public void CaptureWindowIfReady(Func<bool> isReady)
     {
-        if (_screenshotPath is not string shot || _stableFrames < 45 || !rendering.IsReadyForCapture(mode))
+        if (_screenshotPath is not string shot || _stableFrames < 45 || !isReady())
             return;
 
         _pendingExportPath = shot;
@@ -175,10 +187,13 @@ public sealed class CaptureFeature(string? screenshotPath)
     }
 
     public bool ShouldExitAfterFrame(RenderingFeature rendering, ColoringMode mode)
+        => ShouldExitAfterFrame(path => rendering.Save(path, mode));
+
+    public bool ShouldExitAfterFrame(Action<string> save)
     {
         if (_pendingExportPath != null)
         {
-            rendering.Save(_pendingExportPath, mode);
+            save(_pendingExportPath);
             return true;
         }
 

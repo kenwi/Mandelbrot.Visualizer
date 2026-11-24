@@ -20,6 +20,7 @@
     <EmbeddedResource Include="Features/Rendering/Shaders/multibrot_f32.frag" LogicalName="Shaders.multibrot_f32.frag" />
     <EmbeddedResource Include="Features/Rendering/Shaders/multibrot_perturb.frag" LogicalName="Shaders.multibrot_perturb.frag" />
     <EmbeddedResource Include="Features/Rendering/Shaders/ssaa_resolve.frag" LogicalName="Shaders.ssaa_resolve.frag" />
+    <EmbeddedResource Include="Features/Mandelbulb/Shaders/mandelbulb.frag" LogicalName="Shaders.mandelbulb.frag" />
   </ItemGroup>
 
 </Project>

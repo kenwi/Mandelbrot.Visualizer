@@ -4,6 +4,7 @@ using Mandelbrot.Visualizer.Features.Capture;
 using Mandelbrot.Visualizer.Features.Coloring;
 using Mandelbrot.Visualizer.Features.Formula;
 using Mandelbrot.Visualizer.Features.JuliaPreview;
+using Mandelbrot.Visualizer.Features.Mandelbulb;
 using Mandelbrot.Visualizer.Features.Navigation;
 using Mandelbrot.Visualizer.Features.Rendering;
 using Mandelbrot.Visualizer.Shared;
@@ -45,6 +46,7 @@ public static class SelfTest
         ok &= Report(JuliaClickMatrixValid(out string matrixMsg), matrixMsg, matrixMsg);
         ok &= Report(SsaaValid(out string ssaaMsg), ssaaMsg, ssaaMsg);
         ok &= Report(BookmarksValid(out string bookmarksMsg), bookmarksMsg, bookmarksMsg);
+        ok &= Report(MandelbulbValid(out string bulbMsg), bulbMsg, bulbMsg);
 
         Console.WriteLine(ok ? "self-test passed" : "self-test failed");
         return ok;
@@ -1391,6 +1393,318 @@ public static class SelfTest
         }
 
         message = $"bookmarks slice valid ({curated.Count} curated landmarks across all 5 families + Julia, 1e-30/1e-400 round-trip, JSON & CLI builder)";
+        return true;
+    }
+
+    static bool MandelbulbValid(out string message)
+    {
+        MandelbulbParams p = MandelbulbParams.Default;
+
+        float dOrigin = MandelbulbMath.EstimateDistance(Vector3.Zero, p, out _);
+        float dFar = MandelbulbMath.EstimateDistance(new Vector3(0f, 0f, 2.0f), p, out _);
+        if (!(dOrigin <= 0f && dFar > 0.3f && float.IsFinite(dFar)))
+        {
+            message = $"Mandelbulb DE failed interior/exterior bounds (origin={dOrigin}, far={dFar})";
+            return false;
+        }
+
+        // Sphere-trace from (0, 0, 2.5) along -Z and confirm convergence onto the power-8 surface.
+        Vector3 ro = new(0f, 0f, 2.5f);
+        Vector3 rd = new(0f, 0f, -1f);
+        float t = 0f;
+        bool hit = false;
+        int steps = 0;
+        for (int i = 0; i < 120; i++)
+        {
+            steps = i + 1;
+            float d = MandelbulbMath.EstimateDistance(ro + rd * t, p, out _);
+            if (d < 1e-4f)
+            {
+                hit = true;
+                break;
+            }
+            t += d * 0.85f;
+            if (t > 4.0f) break;
+        }
+
+        if (!hit || t < 0.5f || t > 2.4f)
+        {
+            message = $"Mandelbulb sphere-trace failed to hit surface cleanly (hit={hit}, t={t:0.###}, steps={steps})";
+            return false;
+        }
+
+        Vector3 hitPos = ro + rd * t;
+        Vector3 normal = MandelbulbMath.EstimateNormal(hitPos, p);
+        if (!float.IsFinite(normal.X) || MathF.Abs(normal.Length() - 1f) > 1e-3f || normal.Z <= 0.25f)
+        {
+            message = $"Mandelbulb tetrahedral normal invalid at hit point: {normal}";
+            return false;
+        }
+
+        // Verify 3D Julia Bulb DE evaluates cleanly with finite distance and unit normal.
+        MandelbulbParams juliaP = p with { Julia = true };
+        float dJulia = MandelbulbMath.EstimateDistance(new Vector3(0f, 0f, 1.8f), juliaP, out _);
+        if (!(dJulia > 0.1f && float.IsFinite(dJulia)))
+        {
+            message = $"3D Julia Bulb DE failed exterior check (d={dJulia})";
+            return false;
+        }
+
+        // Verify OrbitCameraState basis is orthonormal.
+        OrbitCameraState.Default.GetBasis(out Vector3 camPos, out Vector3 fwd, out Vector3 right, out Vector3 up);
+        float distErr = MathF.Abs(camPos.Length() - OrbitCameraState.Default.Distance);
+        if (distErr > 1e-4f
+            || MathF.Abs(fwd.Length() - 1f) > 1e-4f
+            || MathF.Abs(right.Length() - 1f) > 1e-4f
+            || MathF.Abs(up.Length() - 1f) > 1e-4f
+            || MathF.Abs(Vector3.Dot(fwd, right)) > 1e-4f
+            || MathF.Abs(Vector3.Dot(fwd, up)) > 1e-4f
+            || MathF.Abs(Vector3.Dot(right, up)) > 1e-4f)
+        {
+            message = "OrbitCameraState.GetBasis did not produce an orthonormal camera frame";
+            return false;
+        }
+
+        // Verify OrbitCameraState -> 6DOF CameraPose conversion is seamless (zero visual jump).
+        CameraPose fromOrbit = OrbitCameraState.Default.ToPose();
+        fromOrbit.GetBasis(out Vector3 posePos, out Vector3 poseFwd, out Vector3 poseRight, out Vector3 poseUp);
+        if (Vector3.Distance(camPos, posePos) > 1e-4f
+            || Vector3.Distance(fwd, poseFwd) > 1e-4f
+            || Vector3.Distance(right, poseRight) > 1e-4f
+            || Vector3.Distance(up, poseUp) > 1e-4f)
+        {
+            message = "OrbitCameraState.ToPose() did not preserve camera basis seamlessly";
+            return false;
+        }
+
+        // Verify true gimbal-lock-free 6DOF rotation (pitch past zenith to upside down, then roll & yaw)
+        // and local-axis translation.
+        CameraPose fly = new(Vector3.Zero, Quaternion.Identity, 42f);
+        fly = fly.RotateLocal(0f, MathF.PI * 0.75f, 0f); // pitch up 135 deg (inverted)
+        fly = fly.RotateLocal(0.4f, 0f, -0.6f);          // yaw & roll while upside down
+        fly.GetBasis(out _, out Vector3 ff, out Vector3 fr, out Vector3 fu);
+        if (MathF.Abs(ff.Length() - 1f) > 1e-4f
+            || MathF.Abs(fr.Length() - 1f) > 1e-4f
+            || MathF.Abs(fu.Length() - 1f) > 1e-4f
+            || MathF.Abs(Vector3.Dot(ff, fr)) > 1e-4f
+            || MathF.Abs(Vector3.Dot(ff, fu)) > 1e-4f
+            || MathF.Abs(Vector3.Dot(fr, fu)) > 1e-4f
+            || fu.Y >= 0f)
+        {
+            message = $"6DOF CameraPose rotation lost orthonormality or failed inversion (up={fu})";
+            return false;
+        }
+
+        CameraPose moved = fly.TranslateLocal(0.5f, -0.25f, 1.0f);
+        Vector3 expectedPos = fr * 0.5f - fu * 0.25f + ff * 1.0f;
+        if (Vector3.Distance(moved.Position, expectedPos) > 1e-4f)
+        {
+            message = "6DOF CameraPose.TranslateLocal did not move strictly along local basis";
+            return false;
+        }
+
+        // Verify LevelHorizon zeroes roll while preserving look direction.
+        CameraPose rolled = CameraPose.FromYawPitchRoll(new Vector3(0f, 0f, 2.5f), 0.3f, -0.2f, 0.8f);
+        rolled.GetBasis(out _, out Vector3 rolledFwd, out _, out _);
+        CameraPose leveled = rolled.LevelHorizon();
+        leveled.GetBasis(out _, out Vector3 leveledFwd, out Vector3 leveledRight, out _);
+        if (Vector3.Distance(rolledFwd, leveledFwd) > 1e-4f || MathF.Abs(leveledRight.Y) > 1e-4f)
+        {
+            message = "CameraPose.LevelHorizon failed to zero roll while preserving look direction";
+            return false;
+        }
+
+        // Verify FlyCamera auto-SDF speed scales down smoothly near the surface and Fly -> Orbit anchors ahead.
+        var flyCam = new FlyCamera();
+        flyCam.SetPose(CameraPose.FromLookAt(new Vector3(0f, 0f, 2.5f), Vector3.Zero, Vector3.UnitY));
+        float farSpeed = flyCam.ComputeEffectiveSpeed(p);
+        flyCam.SetPose(CameraPose.FromLookAt(hitPos + new Vector3(0f, 0f, 0.03f), Vector3.Zero, Vector3.UnitY));
+        float nearSpeed = flyCam.ComputeEffectiveSpeed(p);
+        if (!(farSpeed > nearSpeed * 5f && nearSpeed >= 0.004f))
+        {
+            message = $"FlyCamera auto-SDF speed did not scale smoothly near surface (far={farSpeed}, near={nearSpeed})";
+            return false;
+        }
+
+        flyCam.SetPose(CameraPose.FromLookAt(new Vector3(0f, 0f, 2.5f), Vector3.Zero, Vector3.UnitY));
+        OrbitCameraState backToOrbit = flyCam.ToOrbitState(p);
+        if (MathF.Abs(backToOrbit.Distance - t) > 0.05f)
+        {
+            message = $"FlyCamera.ToOrbitState did not anchor pivot on forward surface (dist={backToOrbit.Distance}, expected~{t})";
+            return false;
+        }
+
+        // Verify keyboard movement & rotation accelerate smoothly (not instant 100%) and decelerate to exact zero.
+        flyCam.SetPose(CameraPose.FromLookAt(new Vector3(0f, 0f, 3.0f), Vector3.Zero, Vector3.UnitY));
+        const float dt = 1f / 60f;
+        flyCam.StepKeyboardMotion(new Vector3(0f, 0f, 1f), new Vector3(0f, 0f, 1f), 1f, slowRotate: false, dt, p);
+        float firstLin = flyCam.LinearVelocity.Z;
+        float firstAng = flyCam.AngularVelocity.Z;
+        if (!(firstLin > 0.05f && firstLin < 0.35f && firstAng > 0.05f && firstAng < 0.5f))
+        {
+            message = $"FlyCamera keyboard acceleration was not smooth on first tick (lin={firstLin:0.###}, ang={firstAng:0.###})";
+            return false;
+        }
+
+        for (int i = 0; i < 30; i++)
+            flyCam.StepKeyboardMotion(new Vector3(0f, 0f, 1f), new Vector3(0f, 0f, 1f), 1f, slowRotate: false, dt, p);
+
+        float cruiseLin = flyCam.LinearVelocity.Z;
+        float cruiseAng = flyCam.AngularVelocity.Z;
+        if (!(cruiseLin > 0.90f && cruiseAng > 1.20f))
+        {
+            message = $"FlyCamera keyboard velocity did not ramp up toward target (lin={cruiseLin:0.###}, ang={cruiseAng:0.###})";
+            return false;
+        }
+
+        // Release keys: first coast tick still moves smoothly (not instant zero), then settles to exact zero.
+        flyCam.StepKeyboardMotion(Vector3.Zero, Vector3.Zero, 1f, slowRotate: false, dt, p);
+        float coastLin = flyCam.LinearVelocity.Z;
+        float coastAng = flyCam.AngularVelocity.Z;
+        if (!(coastLin > 0.5f && coastLin < cruiseLin && coastAng > 0.5f && coastAng < cruiseAng))
+        {
+            message = $"FlyCamera keyboard deceleration did not glide smoothly after key release (lin={coastLin:0.###}, ang={coastAng:0.###})";
+            return false;
+        }
+
+        for (int i = 0; i < 60; i++)
+            flyCam.StepKeyboardMotion(Vector3.Zero, Vector3.Zero, 1f, slowRotate: false, dt, p);
+
+        if (flyCam.HasActiveMotion)
+        {
+            message = $"FlyCamera keyboard deceleration did not settle cleanly to zero (lin={flyCam.LinearVelocity}, ang={flyCam.AngularVelocity})";
+            return false;
+        }
+
+        // Verify Mandelbox DE (both positive scale s=2.0 and negative scale s=-1.5) converges cleanly.
+        MandelbulbParams boxPos = MandelbulbParams.DefaultMandelbox;
+        float dBoxFar = MandelbulbMath.EstimateDistance(new Vector3(0f, 0f, 14f), boxPos);
+        if (!(dBoxFar > 2.0f && float.IsFinite(dBoxFar)))
+        {
+            message = $"Mandelbox s=2 exterior DE invalid (d={dBoxFar})";
+            return false;
+        }
+
+        MandelbulbParams boxNeg = boxPos with { BoxScale = -1.5 };
+        float dBoxNegFar = MandelbulbMath.EstimateDistance(new Vector3(0f, 0f, 12f), boxNeg);
+        if (!(dBoxNegFar > 2.0f && float.IsFinite(dBoxNegFar)))
+        {
+            message = $"Mandelbox s=-1.5 exterior DE invalid (d={dBoxNegFar})";
+            return false;
+        }
+
+        // Verify all curated 3D landmarks (Mandelbulb + Mandelbox): valid palette, camera outside surface,
+        // center ray hits fractal, JSON persistence + lossless 6DOF quaternion round-trip, and Copy CLI formatting.
+        List<MandelbulbBookmarkEntry> landmarks = MandelbulbLandmarks.CreateDefaults();
+        if (landmarks.Count < 18)
+        {
+            message = $"Expected at least 18 curated 3D landmarks (Mandelbulb + Mandelbox), got {landmarks.Count}";
+            return false;
+        }
+
+        foreach (MandelbulbBookmarkEntry lm in landmarks)
+        {
+            if (!Palette.TryParseName(lm.Palette, out _))
+            {
+                message = $"3D landmark '{lm.DisplayName}' references unknown palette '{lm.Palette}'";
+                return false;
+            }
+
+            MandelbulbParams lp = lm.ToParams();
+            CameraPose pose = lm.ToActivePose();
+            pose.GetBasis(out Vector3 lpos, out Vector3 lfwd, out _, out _);
+
+            float camDe = MandelbulbMath.EstimateDistance(lpos, lp);
+            if (!(camDe > 0.02f && float.IsFinite(camDe)))
+            {
+                message = $"3D landmark '{lm.DisplayName}' camera is inside or too close to surface (DE={camDe:0.####})";
+                return false;
+            }
+
+            // Trace a ray along the camera's forward vector and confirm it hits the fractal cleanly.
+            float lt = 0f;
+            bool lhit = false;
+            float maxRayT = MathF.Max(6.0f, lp.BoundingRadius * 2.5f);
+            float hitEps = lp.Shape == BulbShape.Mandelbox ? 2e-3f : 5e-4f;
+            for (int i = 0; i < 200; i++)
+            {
+                float d = MandelbulbMath.EstimateDistance(lpos + lfwd * lt, lp);
+                if (d < hitEps)
+                {
+                    lhit = true;
+                    break;
+                }
+                lt += MathF.Max(d * 0.80f, 2e-4f);
+                if (lt > maxRayT) break;
+            }
+
+            if (!lhit)
+            {
+                message = $"3D landmark '{lm.DisplayName}' center ray did not hit fractal surface";
+                return false;
+            }
+        }
+
+        string tempBulbDir = Path.Combine(Path.GetTempPath(), "mandelbulb-bookmarks-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string tempBulbFile = Path.Combine(tempBulbDir, MandelbulbBookmarkStore.DefaultFileName);
+            var bulbMarks = new MandelbulbBookmarks(tempBulbFile);
+            if (bulbMarks.Entries.Count != landmarks.Count)
+            {
+                message = $"MandelbulbBookmarks failed to seed {landmarks.Count} landmarks";
+                return false;
+            }
+
+            CameraPose customFly = CameraPose.FromYawPitchRoll(new Vector3(0.42f, -0.31f, 1.48f), 0.35f, -0.22f, 0.58f);
+            bulbMarks.SaveCurrent("Test 6DOF Spot", BulbCameraMode.Fly, OrbitCameraState.Default, customFly, 1.5f, p with { Power = 5 }, ColoringParams.Default);
+
+            var reloadedMarks = new MandelbulbBookmarks(tempBulbFile);
+            MandelbulbBookmarkEntry? saved = reloadedMarks.Entries.FirstOrDefault(e => e.DisplayName == "Test 6DOF Spot");
+            if (saved is null || saved.CameraMode != BulbCameraMode.Fly)
+            {
+                message = "User-saved 3D Mandelbulb bookmark did not survive JSON reload";
+                return false;
+            }
+
+            customFly.GetBasis(out Vector3 origP, out Vector3 origF, out Vector3 origR, out Vector3 origU);
+            saved.ToFlyPose().GetBasis(out Vector3 loadP, out Vector3 loadF, out Vector3 loadR, out Vector3 loadU);
+            if (Vector3.Distance(origP, loadP) > 1e-4f
+                || Vector3.Distance(origF, loadF) > 1e-4f
+                || Vector3.Distance(origR, loadR) > 1e-4f
+                || Vector3.Distance(origU, loadU) > 1e-4f)
+            {
+                message = "6DOF quaternion pose did not round-trip losslessly through mandelbulb-bookmarks.json";
+                return false;
+            }
+
+            string bulbCli = MandelbulbBookmarkEntry.BuildCliCommand(BulbCameraMode.Fly, OrbitCameraState.Default, customFly, p with { Power = 5, Julia = true }, ColoringParams.Default with { Palette = 2 }, SsaaMode.X2);
+            if (!bulbCli.Contains("--mandelbulb", StringComparison.Ordinal)
+                || !bulbCli.Contains("--fly", StringComparison.Ordinal)
+                || !bulbCli.Contains("--bulb-pos", StringComparison.Ordinal)
+                || !bulbCli.Contains("--bulb-ypr", StringComparison.Ordinal)
+                || !bulbCli.Contains("--power 5", StringComparison.Ordinal)
+                || !bulbCli.Contains("--bulb-julia", StringComparison.Ordinal)
+                || !bulbCli.Contains("--ssaa 2x", StringComparison.Ordinal))
+            {
+                message = $"MandelbulbBookmarkEntry.BuildCliCommand missing expected flags: {bulbCli}";
+                return false;
+            }
+            string boxCli = MandelbulbBookmarkEntry.BuildCliCommand(BulbCameraMode.Orbit, OrbitCameraState.DefaultMandelbox, customFly, MandelbulbParams.DefaultMandelbox with { BoxScale = -1.5 }, ColoringParams.Default, SsaaMode.Off);
+            if (!boxCli.Contains("--mandelbox", StringComparison.Ordinal)
+                || !boxCli.Contains("--box-scale -1.5", StringComparison.Ordinal))
+            {
+                message = $"MandelbulbBookmarkEntry.BuildCliCommand missing Mandelbox flags: {boxCli}";
+                return false;
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(tempBulbDir))
+                Directory.Delete(tempBulbDir, recursive: true);
+        }
+
+        message = $"3D SDF (Mandelbulb + Mandelbox) + 6DOF fly + {landmarks.Count} curated landmarks valid (auto-speed {farSpeed:0.00}->{nearSpeed:0.000}, smooth accel/decel)";
         return true;
     }
 }
