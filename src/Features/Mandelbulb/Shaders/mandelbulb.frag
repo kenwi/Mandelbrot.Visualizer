@@ -331,9 +331,11 @@ void main()
 
     if (!hit)
     {
-        // Subtle atmospheric halo hugging the fractal silhouette (d/t is angular, scale-invariant).
-        float sphereFade = smoothstep(0.0, boundR * 0.35, tMax - tMin);
-        float halo = exp(-minDistGlow * 20.0) * 0.22 * sphereFade;
+        // Tight silhouette halo hugging the fractal surface with zero bounding-sphere rim artifact.
+        // Using (chord / diameter)^2 = 1 - (b/R)^2 avoids the infinite slope of sqrt() at the sphere edge.
+        float chordNorm = clamp((tMax - tMin) / (2.0 * boundR), 0.0, 1.0);
+        float sphereFade = tMin <= 0.0 ? 1.0 : smoothstep(0.0, 0.55, chordNorm * chordNorm);
+        float halo = exp(-minDistGlow * 55.0) * 0.18 * sphereFade;
         vec3 haloTint = mix(vec3(0.35, 0.62, 0.95), samplePalette(phase + 0.35), 0.55);
         finalColor = vec4(clamp(bg + haloTint * halo, 0.0, 1.0), 1.0);
         return;
