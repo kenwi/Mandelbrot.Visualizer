@@ -1697,6 +1697,74 @@ public static class SelfTest
                 message = $"MandelbulbBookmarkEntry.BuildCliCommand missing Mandelbox flags: {boxCli}";
                 return false;
             }
+
+            // Verify auto-focus ray probe, Vogel-disk DoF aperture sampling, Fast-tier quality preservation,
+            // and PBR/atmosphere/DoF CLI + JSON round-trip.
+            float probeDist = MandelbulbMath.ProbeRayDistance(ro, rd, p);
+            if (MathF.Abs(probeDist - t) > 0.02f)
+            {
+                message = $"MandelbulbMath.ProbeRayDistance auto-focus mismatch (probe={probeDist:0.###}, hit={t:0.###})";
+                return false;
+            }
+
+            Vector2 vogelMean = Vector2.Zero;
+            const int vogelN = 12;
+            for (int i = 0; i < vogelN; i++)
+            {
+                Vector2 s = MandelbulbMath.SampleVogelDisk(i, vogelN);
+                if (s.Length() > 1.0001f || !float.IsFinite(s.X) || !float.IsFinite(s.Y))
+                {
+                    message = $"SampleVogelDisk sample {i} outside unit disk: {s}";
+                    return false;
+                }
+                vogelMean += s;
+            }
+            vogelMean /= vogelN;
+            if (vogelMean.Length() > 0.15f)
+            {
+                message = $"SampleVogelDisk distribution biased (mean={vogelMean})";
+                return false;
+            }
+
+            MandelbulbParams fxParams = p with
+            {
+                Quality = BulbQuality.Fast,
+                LightElevation = 18.0,
+                Headlamp = true,
+                FogDensity = 0.35,
+                Roughness = 0.22,
+                Metallic = 0.78,
+                GlowStrength = 0.45,
+                DofEnabled = true,
+                DofAperture = 0.08,
+                DofAutoFocus = false,
+                DofFocusDistance = 2.4,
+            };
+            MandelbulbBookmarkEntry fxEntry = MandelbulbBookmarkEntry.FromCurrent("FX Test", BulbCameraMode.Orbit, OrbitCameraState.Default, customFly, 1f, fxParams, ColoringParams.Default);
+            MandelbulbParams restoredFast = fxEntry.ToParams(preserveQuality: BulbQuality.Fast);
+            if (restoredFast.Quality != BulbQuality.Fast
+                || !restoredFast.Headlamp
+                || Math.Abs(restoredFast.FogDensity - 0.35) > 1e-6
+                || Math.Abs(restoredFast.Metallic - 0.78) > 1e-6
+                || Math.Abs(restoredFast.GlowStrength - 0.45) > 1e-6
+                || !restoredFast.DofEnabled)
+            {
+                message = "3D FX bookmark fields or Fast-tier quality preservation failed round-trip";
+                return false;
+            }
+
+            string fxCli = MandelbulbBookmarkEntry.BuildCliCommand(BulbCameraMode.Orbit, OrbitCameraState.Default, customFly, fxParams, ColoringParams.Default, SsaaMode.Off);
+            if (!fxCli.Contains("--headlamp", StringComparison.Ordinal)
+                || !fxCli.Contains("--fog 0.35", StringComparison.Ordinal)
+                || !fxCli.Contains("--metallic 0.78", StringComparison.Ordinal)
+                || !fxCli.Contains("--glow 0.45", StringComparison.Ordinal)
+                || !fxCli.Contains("--dof 0.08", StringComparison.Ordinal)
+                || !fxCli.Contains("--focus 2.4", StringComparison.Ordinal)
+                || !fxCli.Contains("--bulb-quality fast", StringComparison.Ordinal))
+            {
+                message = $"3D FX BuildCliCommand missing expected flags: {fxCli}";
+                return false;
+            }
         }
         finally
         {
@@ -1704,7 +1772,7 @@ public static class SelfTest
                 Directory.Delete(tempBulbDir, recursive: true);
         }
 
-        message = $"3D SDF (Mandelbulb + Mandelbox) + 6DOF fly + {landmarks.Count} curated landmarks valid (auto-speed {farSpeed:0.00}->{nearSpeed:0.000}, smooth accel/decel)";
+        message = $"3D SDF (Mandelbulb + Mandelbox) + 6DOF fly + PBR/Fog/DoF + {landmarks.Count} curated landmarks valid";
         return true;
     }
 }

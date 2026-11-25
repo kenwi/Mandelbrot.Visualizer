@@ -34,10 +34,11 @@ public sealed class MandelbulbRenderer : IDisposable
 
     Shader _shader;
     bool _shaderLoaded;
-    int _resLoc, _subpixelLoc;
+    int _resLoc, _subpixelLoc, _lensJitterLoc, _dofApertureLoc, _dofFocusLoc;
     int _camPosLoc, _camFwdLoc, _camRightLoc, _camUpLoc, _tanFovLoc;
-    int _shapeLoc, _boundLoc, _powerLoc, _boxScaleLoc, _boxMinRLoc, _boxFoldLoc;
+    int _shapeLoc, _qualityLoc, _boundLoc, _powerLoc, _boxScaleLoc, _boxMinRLoc, _boxFoldLoc;
     int _iterLoc, _detailLoc, _aoLoc, _shadowLoc, _finalLoc, _juliaLoc, _juliaCLoc;
+    int _lightElLoc, _headlampLoc, _fogLoc, _roughLoc, _metalLoc, _glowLoc;
     int _paletteLutLoc, _paletteIdxLoc, _densityLoc, _phaseLoc, _lightAngleLoc;
 
     Shader _resolveShader;
@@ -61,6 +62,8 @@ public sealed class MandelbulbRenderer : IDisposable
     int _nextSample;
     int _totalSamples = 1;
     int _completedSamples;
+    bool _dofActivePass;
+    float _resolvedFocusDist = 2.0f;
     bool _complete = true;
     double _accumRenderMs;
     bool _disposed;
@@ -70,6 +73,8 @@ public sealed class MandelbulbRenderer : IDisposable
     public bool IsRenderingTiles => !_complete;
     public int CompletedSsaaSamples => _completedSamples;
     public int TotalSsaaSamples => _totalSamples;
+    public bool IsDofPass => _dofActivePass;
+    public float ResolvedFocusDistance => _resolvedFocusDist;
     public bool HasFrameTime { get; private set; }
     public double LastFrameMs { get; private set; }
 
@@ -98,12 +103,16 @@ public sealed class MandelbulbRenderer : IDisposable
         _shaderLoaded = true;
         _resLoc = Raylib.GetShaderLocation(_shader, "resolution");
         _subpixelLoc = Raylib.GetShaderLocation(_shader, "subpixelOffset");
+        _lensJitterLoc = Raylib.GetShaderLocation(_shader, "lensJitter");
+        _dofApertureLoc = Raylib.GetShaderLocation(_shader, "dofAperture");
+        _dofFocusLoc = Raylib.GetShaderLocation(_shader, "dofFocusDist");
         _camPosLoc = Raylib.GetShaderLocation(_shader, "camPos");
         _camFwdLoc = Raylib.GetShaderLocation(_shader, "camForward");
         _camRightLoc = Raylib.GetShaderLocation(_shader, "camRight");
         _camUpLoc = Raylib.GetShaderLocation(_shader, "camUp");
         _tanFovLoc = Raylib.GetShaderLocation(_shader, "tanHalfFov");
         _shapeLoc = Raylib.GetShaderLocation(_shader, "shapeMode");
+        _qualityLoc = Raylib.GetShaderLocation(_shader, "qualityTier");
         _boundLoc = Raylib.GetShaderLocation(_shader, "boundingRadius");
         _powerLoc = Raylib.GetShaderLocation(_shader, "power");
         _boxScaleLoc = Raylib.GetShaderLocation(_shader, "boxScale");
@@ -116,6 +125,12 @@ public sealed class MandelbulbRenderer : IDisposable
         _finalLoc = Raylib.GetShaderLocation(_shader, "finalQuality");
         _juliaLoc = Raylib.GetShaderLocation(_shader, "juliaMode");
         _juliaCLoc = Raylib.GetShaderLocation(_shader, "juliaC");
+        _lightElLoc = Raylib.GetShaderLocation(_shader, "lightElevation");
+        _headlampLoc = Raylib.GetShaderLocation(_shader, "headlamp");
+        _fogLoc = Raylib.GetShaderLocation(_shader, "fogDensity");
+        _roughLoc = Raylib.GetShaderLocation(_shader, "roughness");
+        _metalLoc = Raylib.GetShaderLocation(_shader, "metallic");
+        _glowLoc = Raylib.GetShaderLocation(_shader, "glowStrength");
         _paletteLutLoc = Raylib.GetShaderLocation(_shader, "paletteLut");
         _paletteIdxLoc = Raylib.GetShaderLocation(_shader, "paletteIndex");
         _densityLoc = Raylib.GetShaderLocation(_shader, "density");
@@ -148,10 +163,20 @@ public sealed class MandelbulbRenderer : IDisposable
         int renderW = finalQuality ? canvasWidth : Math.Max(1, canvasWidth / 2);
         int renderH = finalQuality ? canvasHeight : Math.Max(1, canvasHeight / 2);
         SsaaMode effectiveSsaa = finalQuality ? ssaa : SsaaMode.Off;
-        bool useSsaa = effectiveSsaa != SsaaMode.Off && _resolveLoaded && EnsureSsaaAccum(renderW, renderH);
-        ReadOnlySpan<Vector2> offsets = useSsaa
+        bool wantDof = finalQuality && parameters.DofEnabled && parameters.DofAperture > 0.0001;
+        bool needsAccum = (effectiveSsaa != SsaaMode.Off || wantDof) && _resolveLoaded && EnsureSsaaAccum(renderW, renderH);
+        bool useDof = wantDof && needsAccum;
+        ReadOnlySpan<Vector2> offsets = needsAccum
             ? SsaaPattern.GetOffsets(effectiveSsaa)
             : SsaaPattern.GetOffsets(SsaaMode.Off);
+
+        int dofSampleCount = parameters.Quality switch
+        {
+            BulbQuality.Fast => 8,
+            BulbQuality.Balanced => 12,
+            _ => 16,
+        };
+        int sampleCount = useDof ? Math.Max(dofSampleCount, offsets.Length) : offsets.Length;
 
         var key = new CacheKey(
             renderW,
@@ -181,10 +206,21 @@ public sealed class MandelbulbRenderer : IDisposable
                 _totalTiles = 1;
             }
 
+            if (parameters.DofEnabled && parameters.DofAutoFocus)
+            {
+                camera.GetBasis(out Vector3 pos, out Vector3 fwd, out _, out _);
+                _resolvedFocusDist = MandelbulbMath.ProbeRayDistance(pos, fwd, parameters);
+            }
+            else
+            {
+                _resolvedFocusDist = (float)parameters.DofFocusDistance;
+            }
+
             _nextTile = 0;
-            _totalSamples = offsets.Length;
+            _totalSamples = sampleCount;
             _nextSample = 0;
             _completedSamples = 0;
+            _dofActivePass = useDof;
             _complete = false;
             _accumRenderMs = 0;
         }
@@ -194,7 +230,7 @@ public sealed class MandelbulbRenderer : IDisposable
             _frameWatch.Restart();
             if (_totalSamples <= 1)
             {
-                RenderPass(_target, renderW, renderH, camera, parameters, coloring, finalQuality, Vector2.Zero, additive: false, clearTarget: _nextTile == 0 && _totalTiles == 1);
+                RenderPass(_target, renderW, renderH, camera, parameters, coloring, finalQuality, Vector2.Zero, Vector2.Zero, 0f, additive: false, clearTarget: _nextTile == 0 && _totalTiles == 1);
                 if (_nextTile >= _totalTiles)
                 {
                     _completedSamples = 1;
@@ -204,12 +240,17 @@ public sealed class MandelbulbRenderer : IDisposable
             }
             else
             {
+                float worldAperture = useDof
+                    ? (float)parameters.DofAperture * MathF.Max(_resolvedFocusDist * 0.35f, 0.12f)
+                    : 0f;
+
                 long frameStart = Stopwatch.GetTimestamp();
                 while (_nextSample < _totalSamples)
                 {
-                    Vector2 offset = offsets[_nextSample];
+                    Vector2 subOffset = offsets[_nextSample % offsets.Length];
+                    Vector2 lensJitter = useDof ? MandelbulbMath.SampleVogelDisk(_nextSample, _totalSamples) : Vector2.Zero;
                     bool clearAccum = _nextSample == 0 && _nextTile == 0;
-                    RenderPass(_ssaaAccum, renderW, renderH, camera, parameters, coloring, finalQuality, offset, additive: true, clearTarget: clearAccum);
+                    RenderPass(_ssaaAccum, renderW, renderH, camera, parameters, coloring, finalQuality, subOffset, lensJitter, worldAperture, additive: true, clearTarget: clearAccum);
                     if (_nextTile >= _totalTiles)
                     {
                         _nextSample++;
@@ -266,10 +307,12 @@ public sealed class MandelbulbRenderer : IDisposable
         in ColoringParams coloring,
         bool finalQuality,
         Vector2 subpixelOffset,
+        Vector2 lensJitter,
+        float worldAperture,
         bool additive,
         bool clearTarget)
     {
-        SetUniforms(width, height, camera, parameters, coloring, finalQuality, subpixelOffset);
+        SetUniforms(width, height, camera, parameters, coloring, finalQuality, subpixelOffset, lensJitter, worldAperture);
 
         Raylib.BeginTextureMode(target);
         if (clearTarget)
@@ -326,13 +369,18 @@ public sealed class MandelbulbRenderer : IDisposable
         in MandelbulbParams parameters,
         in ColoringParams coloring,
         bool finalQuality,
-        Vector2 subpixelOffset)
+        Vector2 subpixelOffset,
+        Vector2 lensJitter,
+        float worldAperture)
     {
         camera.GetBasis(out Vector3 pos, out Vector3 fwd, out Vector3 right, out Vector3 up);
         float tanHalfFov = MathF.Tan(camera.FovDegrees * 0.5f * (MathF.PI / 180f));
 
         SetVec2(_resLoc, width, height);
         SetVec2(_subpixelLoc, subpixelOffset.X, subpixelOffset.Y);
+        SetVec2(_lensJitterLoc, lensJitter.X, lensJitter.Y);
+        SetFloat(_dofApertureLoc, worldAperture);
+        SetFloat(_dofFocusLoc, _resolvedFocusDist);
         SetVec3(_camPosLoc, pos);
         SetVec3(_camFwdLoc, fwd);
         SetVec3(_camRightLoc, right);
@@ -340,6 +388,7 @@ public sealed class MandelbulbRenderer : IDisposable
         SetFloat(_tanFovLoc, tanHalfFov);
 
         SetInt(_shapeLoc, (int)parameters.Shape);
+        SetInt(_qualityLoc, (int)parameters.Quality);
         SetFloat(_boundLoc, parameters.BoundingRadius);
         SetFloat(_powerLoc, (float)parameters.Power);
         SetFloat(_boxScaleLoc, (float)parameters.BoxScale);
@@ -352,6 +401,13 @@ public sealed class MandelbulbRenderer : IDisposable
         SetInt(_finalLoc, finalQuality ? 1 : 0);
         SetInt(_juliaLoc, parameters.Julia ? 1 : 0);
         SetVec3(_juliaCLoc, parameters.JuliaC);
+
+        SetFloat(_lightElLoc, (float)parameters.LightElevation);
+        SetInt(_headlampLoc, parameters.Headlamp ? 1 : 0);
+        SetFloat(_fogLoc, (float)parameters.FogDensity);
+        SetFloat(_roughLoc, (float)parameters.Roughness);
+        SetFloat(_metalLoc, (float)parameters.Metallic);
+        SetFloat(_glowLoc, (float)parameters.GlowStrength);
 
         SetInt(_paletteIdxLoc, coloring.Palette);
         SetFloat(_densityLoc, (float)coloring.Density);

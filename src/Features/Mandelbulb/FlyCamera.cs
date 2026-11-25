@@ -488,24 +488,7 @@ public sealed class FlyCamera
     }
 
     static float ProbeForwardDistance(Vector3 origin, Vector3 forward, in MandelbulbParams parameters)
-    {
-        float maxProbe = MathF.Max(6.0f, parameters.BoundingRadius * 2.2f);
-        float t = 0.002f;
-        for (int i = 0; i < 80; i++)
-        {
-            float d = MandelbulbMath.EstimateDistance(origin + forward * t, parameters);
-            if (d < 0.001f)
-                return Math.Clamp(t, 0.08f, maxProbe);
-            t += MathF.Max(d * 0.85f, 0.002f);
-            if (t > maxProbe)
-                break;
-        }
-
-        // If looking into open space, orbit around the distance to origin (or a comfortable default ahead).
-        float toOrigin = origin.Length();
-        float fallback = parameters.Shape == BulbShape.Mandelbox ? 10.0f : 2.0f;
-        return Math.Clamp(toOrigin > 0.2f && toOrigin < maxProbe ? toOrigin : fallback, 0.25f, maxProbe);
-    }
+        => MandelbulbMath.ProbeRayDistance(origin, forward, parameters);
 
     void ClampPosition()
     {

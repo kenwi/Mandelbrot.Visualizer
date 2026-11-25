@@ -7,10 +7,16 @@ using ZeroElectric.Vinculum;
 
 namespace Mandelbrot.Visualizer.Features.Mandelbulb;
 
+public enum BulbPanelTab
+{
+    Fractal = 0,
+    LookFx = 1,
+}
+
 /// <summary>
-/// Vertical slice owning 3D SDF raymarched Mandelbulb mode: parameters, Orbit and
-/// 6DOF Fly cameras, GPU raymarcher, keyboard/pointer controls, side-panel section,
-/// and status telemetry.
+/// Vertical slice owning 3D SDF raymarched fractals (Mandelbulb & Mandelbox):
+/// parameters, Orbit & smoothed 6DOF Fly cameras, PBR lighting/atmosphere/DoF,
+/// GPU raymarcher, 3D landmarks/bookmarks, side-panel drawer, and status telemetry.
 /// </summary>
 public sealed class MandelbulbFeature : IDisposable
 {
@@ -22,8 +28,11 @@ public sealed class MandelbulbFeature : IDisposable
     readonly DoubleField _boxScaleField = new();
     readonly IntField _iterationsField = new();
 
+    BulbPanelTab _activeTab = BulbPanelTab.Fractal;
+
     public bool Active { get; private set; }
     public BulbCameraMode CameraMode { get; private set; } = BulbCameraMode.Orbit;
+    public BulbPanelTab ActiveTab => _activeTab;
     public bool IsFlyMode => CameraMode == BulbCameraMode.Fly;
     public MandelbulbParams State { get; private set; } = MandelbulbParams.Default;
     public OrbitCameraState Camera => _orbitCamera.State;
@@ -46,11 +55,14 @@ public sealed class MandelbulbFeature : IDisposable
         _bookmarks.DismissPopups();
     }
 
+    public void SetActiveTab(BulbPanelTab tab) => _activeTab = tab;
+
     public void DismissPopups() => _bookmarks.DismissPopups();
 
     public void ApplyBookmarkEntry(MandelbulbBookmarkEntry entry)
     {
-        SetParams(entry.ToParams());
+        // Preserve the user's machine performance tier (Fast/Balanced/High) across landmark switches.
+        SetParams(entry.ToParams(preserveQuality: State.Quality));
         _orbitCamera.SetState(entry.ToOrbitState());
         _flyCamera.SetSpeed(entry.FlySpeed);
 
@@ -138,10 +150,17 @@ public sealed class MandelbulbFeature : IDisposable
             Power = MandelbulbParams.ClampPower(parameters.Power),
             Iterations = MandelbulbParams.ClampIterations(parameters.Iterations),
             Detail = Math.Clamp(parameters.Detail, MandelbulbParams.DetailMin, MandelbulbParams.DetailMax),
-            AoStrength = Math.Clamp(parameters.AoStrength, 0.0, 1.0),
+            AoStrength = MandelbulbParams.ClampUnit(parameters.AoStrength, 0.78),
             BoxScale = MandelbulbParams.ClampBoxScale(parameters.BoxScale),
             BoxMinRadius = MandelbulbParams.ClampBoxMinRadius(parameters.BoxMinRadius),
             BoxFoldLimit = MandelbulbParams.ClampBoxFoldLimit(parameters.BoxFoldLimit),
+            LightElevation = MandelbulbParams.ClampLightElevation(parameters.LightElevation),
+            FogDensity = MandelbulbParams.ClampUnit(parameters.FogDensity),
+            Roughness = MandelbulbParams.ClampRoughness(parameters.Roughness),
+            Metallic = MandelbulbParams.ClampUnit(parameters.Metallic, 0.12),
+            GlowStrength = MandelbulbParams.ClampUnit(parameters.GlowStrength),
+            DofAperture = MandelbulbParams.ClampDofAperture(parameters.DofAperture),
+            DofFocusDistance = MandelbulbParams.ClampDofFocus(parameters.DofFocusDistance),
         };
         _powerField.Invalidate();
         _boxScaleField.Invalidate();
@@ -195,6 +214,12 @@ public sealed class MandelbulbFeature : IDisposable
 
         if (!Active)
             return false;
+
+        if (Raylib.IsKeyPressed(KeyboardKey.KEY_TAB))
+        {
+            _activeTab = _activeTab == BulbPanelTab.Fractal ? BulbPanelTab.LookFx : BulbPanelTab.Fractal;
+            return false;
+        }
 
         if (Raylib.IsKeyPressed(KeyboardKey.KEY_F))
         {
@@ -270,6 +295,12 @@ public sealed class MandelbulbFeature : IDisposable
             changed = true;
         }
 
+        if (Raylib.IsKeyPressed(KeyboardKey.KEY_K))
+        {
+            SetParams(State with { Headlamp = !State.Headlamp });
+            changed = true;
+        }
+
         return changed;
     }
 
@@ -282,14 +313,75 @@ public sealed class MandelbulbFeature : IDisposable
     {
         if (!_renderer.IsAvailable)
         {
-            Raylib.DrawText("3D Mandelbulb requires GPU shaders.", 24, 24, 20, PanelTheme.TitleText);
+            Raylib.DrawText("3D SDF mode requires GPU shaders.", 24, 24, 20, PanelTheme.TitleText);
             return;
         }
 
         _renderer.Draw(canvasWidth, canvasHeight, ActivePose, State, coloring, finalQuality, ssaa);
     }
 
-    public bool DrawPanel(ref PanelLayout layout, TextEditScope editScope)
+    public bool DrawPanel(ref PanelLayout layout, ColoringFeature coloring, TextEditScope editScope)
+    {
+        bool changed = false;
+
+        int qualityIndex = (int)State.Quality;
+        if (layout.LabeledCombo("Quality", "Fast (low-end);Balanced;High", ref qualityIndex, labelWidth: 82))
+        {
+            SetParams(State with { Quality = (BulbQuality)qualityIndex });
+            changed = true;
+        }
+
+        DrawTabBar(ref layout, editScope);
+
+        if (_activeTab == BulbPanelTab.Fractal)
+            changed |= DrawFractalTab(ref layout, editScope);
+        else
+            changed |= DrawLookFxTab(ref layout, coloring);
+
+        return changed;
+    }
+
+    void DrawTabBar(ref PanelLayout layout, TextEditScope editScope)
+    {
+        float halfW = (layout.Width - 6f) * 0.5f;
+        var leftRect = new Rectangle { x = layout.X, y = layout.Y, width = halfW, height = 26f };
+        var rightRect = new Rectangle { x = layout.X + halfW + 6f, y = layout.Y, width = halfW, height = 26f };
+        layout.Y += 32f;
+
+        if (DrawTabButton(leftRect, "Fractal", _activeTab == BulbPanelTab.Fractal))
+        {
+            editScope.CancelAll();
+            _activeTab = BulbPanelTab.Fractal;
+        }
+
+        if (DrawTabButton(rightRect, "Look & FX", _activeTab == BulbPanelTab.LookFx))
+        {
+            editScope.CancelAll();
+            _activeTab = BulbPanelTab.LookFx;
+        }
+    }
+
+    bool DrawTabButton(Rectangle rect, string label, bool active)
+    {
+        bool blocked = CapturesInput;
+        bool hovered = !blocked && Raylib.CheckCollisionPointRec(Raylib.GetMousePosition(), rect);
+        Color bg = active
+            ? new Color(46, 74, 108, 255)
+            : hovered
+                ? new Color(36, 44, 62, 255)
+                : new Color(26, 30, 40, 255);
+        Color border = active || hovered ? new Color(96, 176, 232, 255) : PanelTheme.PanelBorder;
+        Color textCol = active ? new Color(255, 255, 255, 255) : PanelTheme.MutedText;
+
+        Raylib.DrawRectangleRec(rect, bg);
+        Raylib.DrawRectangleLinesEx(rect, 1f, border);
+        int textW = Raylib.MeasureText(label, 15);
+        Raylib.DrawText(label, (int)(rect.x + (rect.width - textW) * 0.5f), (int)rect.y + 5, 15, textCol);
+
+        return !blocked && hovered && Raylib.IsMouseButtonPressed(MouseButton.MOUSE_BUTTON_LEFT);
+    }
+
+    bool DrawFractalTab(ref PanelLayout layout, TextEditScope editScope)
     {
         bool changed = false;
 
@@ -317,7 +409,6 @@ public sealed class MandelbulbFeature : IDisposable
                 FlyCamera.MaxSpeed,
                 value => _flyCamera.SetSpeed((float)value));
 
-            // Compact row: Auto SDF speed checkbox on the left + Level horizon button on the right.
             float splitX = layout.X + layout.Width * 0.62f;
             float rowY = layout.Y;
             bool autoSpeed = _flyCamera.AutoSdfSpeed;
@@ -394,17 +485,11 @@ public sealed class MandelbulbFeature : IDisposable
             SetParams(State with { Detail = value });
             TouchActiveCamera();
         });
-        changed |= layout.LabeledSlider($"AO      {State.AoStrength:0.00}", State.AoStrength, 0.0, 1.0, value =>
-        {
-            SetParams(State with { AoStrength = value });
-            TouchActiveCamera();
-        });
 
-        bool shadows = State.SoftShadows;
         bool julia = State.Julia;
-        if (layout.TwoChecks("Soft shadows", ref shadows, "3D Julia", ref julia, splitRatio: 0.54f))
+        if (layout.Check("3D Julia mode (J)", ref julia))
         {
-            SetParams(State with { SoftShadows = shadows, Julia = julia });
+            SetParams(State with { Julia = julia });
             changed = true;
         }
 
@@ -427,6 +512,89 @@ public sealed class MandelbulbFeature : IDisposable
                 SetParams(State with { JuliaC = jc with { Z = (float)value } });
                 TouchActiveCamera();
             });
+        }
+
+        return changed;
+    }
+
+    bool DrawLookFxTab(ref PanelLayout layout, ColoringFeature coloring)
+    {
+        bool changed = coloring.DrawPanel3D(ref layout);
+
+        changed |= layout.LabeledSlider($"Light el {State.LightElevation:0}d", State.LightElevation, MandelbulbParams.LightElevationMin, MandelbulbParams.LightElevationMax, value =>
+        {
+            SetParams(State with { LightElevation = value });
+            TouchActiveCamera();
+        });
+
+        bool shadows = State.SoftShadows;
+        bool headlamp = State.Headlamp;
+        if (layout.TwoChecks("Soft shadows", ref shadows, "Headlamp (K)", ref headlamp, splitRatio: 0.54f))
+        {
+            SetParams(State with { SoftShadows = shadows, Headlamp = headlamp });
+            changed = true;
+        }
+
+        changed |= layout.LabeledSlider($"AO      {State.AoStrength:0.00}", State.AoStrength, 0.0, 1.0, value =>
+        {
+            SetParams(State with { AoStrength = value });
+            TouchActiveCamera();
+        });
+        changed |= layout.LabeledSlider($"Fog     {State.FogDensity:0.00}", State.FogDensity, 0.0, 1.0, value =>
+        {
+            SetParams(State with { FogDensity = value });
+            TouchActiveCamera();
+        });
+
+        layout.Separator();
+
+        changed |= layout.LabeledSlider($"Rough   {State.Roughness:0.00}", State.Roughness, MandelbulbParams.RoughnessMin, MandelbulbParams.RoughnessMax, value =>
+        {
+            SetParams(State with { Roughness = value });
+            TouchActiveCamera();
+        });
+        changed |= layout.LabeledSlider($"Metal   {State.Metallic:0.00}", State.Metallic, 0.0, 1.0, value =>
+        {
+            SetParams(State with { Metallic = value });
+            TouchActiveCamera();
+        });
+        changed |= layout.LabeledSlider($"Glow    {State.GlowStrength:0.00}", State.GlowStrength, 0.0, 1.0, value =>
+        {
+            SetParams(State with { GlowStrength = value });
+            TouchActiveCamera();
+        });
+
+        layout.Separator();
+
+        bool dof = State.DofEnabled;
+        bool autoFocus = State.DofAutoFocus;
+        if (layout.TwoChecks("Depth of Field", ref dof, "Auto focus", ref autoFocus, splitRatio: 0.56f))
+        {
+            SetParams(State with { DofEnabled = dof, DofAutoFocus = autoFocus });
+            changed = true;
+        }
+
+        if (State.DofEnabled)
+        {
+            changed |= layout.LabeledSlider($"Aperture {State.DofAperture:0.000}", State.DofAperture, MandelbulbParams.DofApertureMin, MandelbulbParams.DofApertureMax, value =>
+            {
+                SetParams(State with { DofAperture = value });
+                TouchActiveCamera();
+            });
+
+            if (State.DofAutoFocus)
+            {
+                layout.Label($"Focus   {_renderer.ResolvedFocusDistance.ToString("0.00", CultureInfo.InvariantCulture)} (auto)");
+            }
+            else
+            {
+                double maxFocus = State.Shape == BulbShape.Mandelbox ? MandelbulbParams.DofFocusMax : 8.0;
+                changed |= layout.LabeledSlider($"Focus   {State.DofFocusDistance:0.00}", State.DofFocusDistance, MandelbulbParams.DofFocusMin, maxFocus, value =>
+                {
+                    SetParams(State with { DofFocusDistance = value });
+                    TouchActiveCamera();
+                });
+            }
         }
 
         return changed;
@@ -482,17 +650,21 @@ public sealed class MandelbulbFeature : IDisposable
     public string StatusLine(SsaaMode ssaa)
     {
         int fps = Raylib.GetFPS();
+        string tierTag = State.Quality == BulbQuality.Fast ? " Fast" : string.Empty;
         string ssaaTag = ssaa != SsaaMode.Off ? $" {SsaaPattern.ShortLabel(ssaa)}" : string.Empty;
         if (!_renderer.IsAvailable)
             return "No GPU shader";
         if (_renderer.IsRenderingTiles)
         {
+            if (_renderer.IsDofPass)
+                return $"GPU 3D DoF ({_renderer.CompletedSsaaSamples}/{_renderer.TotalSsaaSamples})...";
             if (_renderer.TotalSsaaSamples > 1)
                 return $"GPU 3D{ssaaTag} ({_renderer.CompletedSsaaSamples}/{_renderer.TotalSsaaSamples})...";
-            return "GPU 3D tiling...";
+            return $"GPU 3D{tierTag} tiling...";
         }
 
-        return $"GPU 3D{ssaaTag}    {fps} fps";
+        string dofTag = State.DofEnabled ? " DoF" : string.Empty;
+        return $"GPU 3D{tierTag}{ssaaTag}{dofTag}   {fps} fps";
     }
 
     public bool IsReadyForCapture(SsaaMode expectedSsaa)

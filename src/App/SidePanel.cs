@@ -80,10 +80,8 @@ public sealed class SidePanel
 
         if (mandelbulb.Active)
         {
-            changed |= mandelbulb.DrawPanel(ref layout, EditScope);
+            changed |= mandelbulb.DrawPanel(ref layout, coloring, EditScope);
             layout.Separator();
-            changed |= coloring.DrawPanel3D(ref layout);
-            layout.Space(2);
 
             if (panelBlocked)
                 RayGui.GuiEnable();
@@ -124,15 +122,15 @@ public sealed class SidePanel
                 layout.Hint("WASD move   Space/Ctrl up/down");
                 layout.Hint("LMB look  Q/E or RMB roll  MMB strafe");
                 layout.Hint("Wheel speed   Shift boost   Alt slow");
-                layout.Hint("F orbit  M shape  X level  B save");
-                layout.Hint(", . spot  [ ] param  - + iter  F2 png");
+                layout.Hint("F orbit  M shape  Tab FX  K headlamp");
+                layout.Hint("B save  , . spot  [ ] param  F2 png");
             }
             else
             {
                 layout.Hint("Drag orbit   RMB/Shift drag pan");
                 layout.Hint("Wheel/dbl-click zoom   arrows orbit");
-                layout.Hint("F 6dof fly  M shape  B save  , . spot");
-                layout.Hint("[ ] param  - + iter  C pal  A ssaa");
+                layout.Hint("F 6dof fly  M shape  Tab FX  K lamp");
+                layout.Hint("B save  , . spot  [ ] param  - + iter");
                 layout.Hint("3 2D/3D  J julia  L shadow  S png");
             }
 

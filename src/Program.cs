@@ -53,6 +53,16 @@ BulbShape? bulbShape = null;
 double? boxScale = null;
 double? boxMinRadius = null;
 double? boxFoldLimit = null;
+BulbQuality? bulbQuality = null;
+double? lightElevation = null;
+bool? headlamp = null;
+double? fogDensity = null;
+double? roughness = null;
+double? metallic = null;
+double? glowStrength = null;
+double? dofAperture = null;
+double? dofFocusDistance = null;
+BulbPanelTab? bulbTab = null;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -282,6 +292,44 @@ for (int i = 0; i < args.Length; i++)
             mandelbulb = true;
             bulbSpotName = args[++i];
             break;
+        case "--bulb-quality" when i + 1 < args.Length:
+            if (Enum.TryParse<BulbQuality>(args[++i], true, out BulbQuality parsedQuality))
+                bulbQuality = parsedQuality;
+            break;
+        case "--light-el" when i + 1 < args.Length:
+            if (double.TryParse(args[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedEl))
+                lightElevation = parsedEl;
+            break;
+        case "--headlamp":
+            headlamp = true;
+            break;
+        case "--fog" when i + 1 < args.Length:
+            if (double.TryParse(args[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedFog))
+                fogDensity = parsedFog;
+            break;
+        case "--roughness" when i + 1 < args.Length:
+            if (double.TryParse(args[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedRough))
+                roughness = parsedRough;
+            break;
+        case "--metallic" when i + 1 < args.Length:
+            if (double.TryParse(args[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedMetal))
+                metallic = parsedMetal;
+            break;
+        case "--glow" when i + 1 < args.Length:
+            if (double.TryParse(args[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedGlow))
+                glowStrength = parsedGlow;
+            break;
+        case "--dof" when i + 1 < args.Length:
+            if (double.TryParse(args[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedDof))
+                dofAperture = parsedDof;
+            break;
+        case "--focus" when i + 1 < args.Length:
+            if (double.TryParse(args[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedFocus))
+                dofFocusDistance = parsedFocus;
+            break;
+        case "--bulb-fx-tab":
+            bulbTab = BulbPanelTab.LookFx;
+            break;
     }
 }
 
@@ -343,7 +391,17 @@ var options = new LaunchOptions(
     bulbShape,
     boxScale,
     boxMinRadius,
-    boxFoldLimit);
+    boxFoldLimit,
+    bulbQuality,
+    lightElevation,
+    headlamp,
+    fogDensity,
+    roughness,
+    metallic,
+    glowStrength,
+    dofAperture,
+    dofFocusDistance,
+    bulbTab);
 using var host = new VisualizerHost(options);
 host.Run();
 return 0;

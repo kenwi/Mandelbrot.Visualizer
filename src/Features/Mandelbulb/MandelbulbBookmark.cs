@@ -54,6 +54,18 @@ public sealed record MandelbulbBookmarkEntry
     public float JuliaY { get; init; } = 0.60f;
     public float JuliaZ { get; init; } = 0.20f;
 
+    // Optional lighting, atmosphere, PBR material, and DoF
+    public double LightElevation { get; init; } = 35.0;
+    public bool Headlamp { get; init; }
+    public double FogDensity { get; init; }
+    public double Roughness { get; init; } = 0.42;
+    public double Metallic { get; init; } = 0.12;
+    public double GlowStrength { get; init; }
+    public bool DofEnabled { get; init; }
+    public double DofAperture { get; init; } = 0.04;
+    public bool DofAutoFocus { get; init; } = true;
+    public double DofFocusDistance { get; init; } = 2.0;
+
     // Coloring & lighting
     public string Palette { get; init; } = "Classic";
     public double Density { get; init; } = 1.0;
@@ -63,7 +75,7 @@ public sealed record MandelbulbBookmarkEntry
     [JsonIgnore]
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? "Untitled 3D Spot" : Name.Trim();
 
-    public MandelbulbParams ToParams() => new(
+    public MandelbulbParams ToParams(BulbQuality preserveQuality = BulbQuality.Balanced) => new(
         Power: MandelbulbParams.ClampPower(Power),
         Iterations: MandelbulbParams.ClampIterations(Iterations),
         Detail: Math.Clamp(Detail, MandelbulbParams.DetailMin, MandelbulbParams.DetailMax),
@@ -74,7 +86,18 @@ public sealed record MandelbulbBookmarkEntry
         Shape: Shape,
         BoxScale: MandelbulbParams.ClampBoxScale(BoxScale),
         BoxMinRadius: MandelbulbParams.ClampBoxMinRadius(BoxMinRadius),
-        BoxFoldLimit: MandelbulbParams.ClampBoxFoldLimit(BoxFoldLimit));
+        BoxFoldLimit: MandelbulbParams.ClampBoxFoldLimit(BoxFoldLimit),
+        Quality: preserveQuality,
+        LightElevation: MandelbulbParams.ClampLightElevation(LightElevation),
+        Headlamp: Headlamp,
+        FogDensity: MandelbulbParams.ClampUnit(FogDensity),
+        Roughness: MandelbulbParams.ClampRoughness(Roughness),
+        Metallic: MandelbulbParams.ClampUnit(Metallic, 0.12),
+        GlowStrength: MandelbulbParams.ClampUnit(GlowStrength),
+        DofEnabled: DofEnabled,
+        DofAperture: MandelbulbParams.ClampDofAperture(DofAperture),
+        DofAutoFocus: DofAutoFocus,
+        DofFocusDistance: MandelbulbParams.ClampDofFocus(DofFocusDistance));
 
     public OrbitCameraState ToOrbitState() => new(
         Target: new Vector3(TargetX, TargetY, TargetZ),
@@ -135,7 +158,13 @@ public sealed record MandelbulbBookmarkEntry
         BulbShape shape = BulbShape.Mandelbulb,
         double boxScale = 2.0,
         double boxMinRadius = 0.5,
-        double boxFoldLimit = 1.0)
+        double boxFoldLimit = 1.0,
+        double lightElevation = 35.0,
+        bool headlamp = false,
+        double fogDensity = 0.0,
+        double roughness = 0.42,
+        double metallic = 0.12,
+        double glowStrength = 0.0)
     {
         const float degToRad = MathF.PI / 180f;
         CameraPose pose = CameraPose.FromYawPitchRoll(position, yawDeg * degToRad, pitchDeg * degToRad, rollDeg * degToRad, fov);
@@ -167,6 +196,12 @@ public sealed record MandelbulbBookmarkEntry
             JuliaX = jc.X,
             JuliaY = jc.Y,
             JuliaZ = jc.Z,
+            LightElevation = lightElevation,
+            Headlamp = headlamp,
+            FogDensity = fogDensity,
+            Roughness = roughness,
+            Metallic = metallic,
+            GlowStrength = glowStrength,
             Palette = palette,
             Density = density,
             Phase = phase,
@@ -217,6 +252,16 @@ public sealed record MandelbulbBookmarkEntry
             JuliaX = bulb.JuliaC.X,
             JuliaY = bulb.JuliaC.Y,
             JuliaZ = bulb.JuliaC.Z,
+            LightElevation = bulb.LightElevation,
+            Headlamp = bulb.Headlamp,
+            FogDensity = bulb.FogDensity,
+            Roughness = bulb.Roughness,
+            Metallic = bulb.Metallic,
+            GlowStrength = bulb.GlowStrength,
+            DofEnabled = bulb.DofEnabled,
+            DofAperture = bulb.DofAperture,
+            DofAutoFocus = bulb.DofAutoFocus,
+            DofFocusDistance = bulb.DofFocusDistance,
             Palette = Coloring.Palette.NameOf(coloring.Palette),
             Density = coloring.Density,
             Phase = coloring.Phase,
@@ -308,6 +353,34 @@ public sealed record MandelbulbBookmarkEntry
 
         if (Math.Abs(coloring.LightAngle - 135.0) > 0.5)
             sb.Append($" --angle {coloring.LightAngle.ToString("0.#", CultureInfo.InvariantCulture)}");
+
+        if (Math.Abs(bulb.LightElevation - 35.0) > 0.5)
+            sb.Append($" --light-el {bulb.LightElevation.ToString("0.#", CultureInfo.InvariantCulture)}");
+
+        if (bulb.Headlamp)
+            sb.Append(" --headlamp");
+
+        if (bulb.FogDensity > 0.005)
+            sb.Append($" --fog {bulb.FogDensity.ToString("0.##", CultureInfo.InvariantCulture)}");
+
+        if (Math.Abs(bulb.Roughness - 0.42) > 0.01)
+            sb.Append($" --roughness {bulb.Roughness.ToString("0.##", CultureInfo.InvariantCulture)}");
+
+        if (Math.Abs(bulb.Metallic - 0.12) > 0.01)
+            sb.Append($" --metallic {bulb.Metallic.ToString("0.##", CultureInfo.InvariantCulture)}");
+
+        if (bulb.GlowStrength > 0.005)
+            sb.Append($" --glow {bulb.GlowStrength.ToString("0.##", CultureInfo.InvariantCulture)}");
+
+        if (bulb.DofEnabled)
+        {
+            sb.Append($" --dof {bulb.DofAperture.ToString("0.###", CultureInfo.InvariantCulture)}");
+            if (!bulb.DofAutoFocus)
+                sb.Append($" --focus {bulb.DofFocusDistance.ToString("0.##", CultureInfo.InvariantCulture)}");
+        }
+
+        if (bulb.Quality != BulbQuality.Balanced)
+            sb.Append($" --bulb-quality {bulb.Quality.ToString().ToLowerInvariant()}");
 
         if (ssaa != SsaaMode.Off)
             sb.Append($" --ssaa {SsaaPattern.ShortLabel(ssaa)}");

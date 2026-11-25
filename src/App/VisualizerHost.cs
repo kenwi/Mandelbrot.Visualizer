@@ -56,7 +56,17 @@ public sealed record LaunchOptions(
     BulbShape? BulbShape = null,
     double? BoxScale = null,
     double? BoxMinRadius = null,
-    double? BoxFoldLimit = null);
+    double? BoxFoldLimit = null,
+    BulbQuality? BulbQuality = null,
+    double? LightElevation = null,
+    bool? Headlamp = null,
+    double? FogDensity = null,
+    double? Roughness = null,
+    double? Metallic = null,
+    double? GlowStrength = null,
+    double? DofAperture = null,
+    double? DofFocusDistance = null,
+    BulbPanelTab? BulbTab = null);
 
 /// <summary>
 /// Thin application shell owning the Raylib window lifecycle and frame loop,
@@ -155,7 +165,20 @@ public sealed class VisualizerHost : IDisposable
                 BoxScale = options.BoxScale.HasValue ? MandelbulbParams.ClampBoxScale(options.BoxScale.Value) : bulb.BoxScale,
                 BoxMinRadius = options.BoxMinRadius.HasValue ? MandelbulbParams.ClampBoxMinRadius(options.BoxMinRadius.Value) : bulb.BoxMinRadius,
                 BoxFoldLimit = options.BoxFoldLimit.HasValue ? MandelbulbParams.ClampBoxFoldLimit(options.BoxFoldLimit.Value) : bulb.BoxFoldLimit,
+                Quality = options.BulbQuality ?? bulb.Quality,
+                LightElevation = options.LightElevation ?? bulb.LightElevation,
+                Headlamp = options.Headlamp ?? bulb.Headlamp,
+                FogDensity = options.FogDensity ?? bulb.FogDensity,
+                Roughness = options.Roughness ?? bulb.Roughness,
+                Metallic = options.Metallic ?? bulb.Metallic,
+                GlowStrength = options.GlowStrength ?? bulb.GlowStrength,
+                DofEnabled = options.DofAperture.HasValue || bulb.DofEnabled,
+                DofAperture = options.DofAperture ?? bulb.DofAperture,
+                DofAutoFocus = options.DofFocusDistance.HasValue ? false : bulb.DofAutoFocus,
+                DofFocusDistance = options.DofFocusDistance ?? bulb.DofFocusDistance,
             });
+            if (options.BulbTab.HasValue)
+                _mandelbulb.SetActiveTab(options.BulbTab.Value);
             if (options.BulbCamera.HasValue || options.BulbTarget.HasValue)
             {
                 OrbitCameraState cam = options.BulbCamera ?? _mandelbulb.Camera;

@@ -8,8 +8,16 @@ public enum BulbShape
     Mandelbox = 1,
 }
 
+public enum BulbQuality
+{
+    Fast = 0,
+    Balanced = 1,
+    High = 2,
+}
+
 /// <summary>
-/// Immutable parameter set for 3D SDF raymarched fractals (Mandelbulb & Mandelbox).
+/// Immutable parameter set for 3D SDF raymarched fractals (Mandelbulb & Mandelbox),
+/// including optional PBR material, headlamp, depth fog, quality tier, and thin-lens DoF.
 /// </summary>
 public readonly record struct MandelbulbParams(
     double Power,
@@ -22,7 +30,18 @@ public readonly record struct MandelbulbParams(
     BulbShape Shape = BulbShape.Mandelbulb,
     double BoxScale = 2.0,
     double BoxMinRadius = 0.5,
-    double BoxFoldLimit = 1.0)
+    double BoxFoldLimit = 1.0,
+    BulbQuality Quality = BulbQuality.Balanced,
+    double LightElevation = 35.0,
+    bool Headlamp = false,
+    double FogDensity = 0.0,
+    double Roughness = 0.42,
+    double Metallic = 0.12,
+    double GlowStrength = 0.0,
+    bool DofEnabled = false,
+    double DofAperture = 0.04,
+    bool DofAutoFocus = true,
+    double DofFocusDistance = 2.0)
 {
     public const double PowerMin = 2.0;
     public const double PowerMax = 16.0;
@@ -36,6 +55,14 @@ public readonly record struct MandelbulbParams(
     public const double BoxMinRadiusMax = 1.00;
     public const double BoxFoldLimitMin = 0.50;
     public const double BoxFoldLimitMax = 2.00;
+    public const double LightElevationMin = -60.0;
+    public const double LightElevationMax = 85.0;
+    public const double RoughnessMin = 0.06;
+    public const double RoughnessMax = 1.0;
+    public const double DofApertureMin = 0.005;
+    public const double DofApertureMax = 0.25;
+    public const double DofFocusMin = 0.05;
+    public const double DofFocusMax = 36.0;
 
     public static MandelbulbParams Default => new(
         Power: 8.0,
@@ -48,7 +75,18 @@ public readonly record struct MandelbulbParams(
         Shape: BulbShape.Mandelbulb,
         BoxScale: 2.0,
         BoxMinRadius: 0.5,
-        BoxFoldLimit: 1.0);
+        BoxFoldLimit: 1.0,
+        Quality: BulbQuality.Balanced,
+        LightElevation: 35.0,
+        Headlamp: false,
+        FogDensity: 0.0,
+        Roughness: 0.42,
+        Metallic: 0.12,
+        GlowStrength: 0.0,
+        DofEnabled: false,
+        DofAperture: 0.04,
+        DofAutoFocus: true,
+        DofFocusDistance: 2.0);
 
     public static MandelbulbParams DefaultMandelbox => Default with
     {
@@ -102,12 +140,27 @@ public readonly record struct MandelbulbParams(
 
     public static double ClampBoxFoldLimit(double value)
         => double.IsFinite(value) ? Math.Clamp(value, BoxFoldLimitMin, BoxFoldLimitMax) : 1.0;
+
+    public static double ClampLightElevation(double value)
+        => double.IsFinite(value) ? Math.Clamp(value, LightElevationMin, LightElevationMax) : 35.0;
+
+    public static double ClampUnit(double value, double fallback = 0.0)
+        => double.IsFinite(value) ? Math.Clamp(value, 0.0, 1.0) : fallback;
+
+    public static double ClampRoughness(double value)
+        => double.IsFinite(value) ? Math.Clamp(value, RoughnessMin, RoughnessMax) : 0.42;
+
+    public static double ClampDofAperture(double value)
+        => double.IsFinite(value) ? Math.Clamp(value, DofApertureMin, DofApertureMax) : 0.04;
+
+    public static double ClampDofFocus(double value)
+        => double.IsFinite(value) ? Math.Clamp(value, DofFocusMin, DofFocusMax) : 2.0;
 }
 
 /// <summary>
 /// CPU reference Distance Estimators matching Shaders/mandelbulb.frag (White/Nylander
 /// Mandelbulb and Tom Lowe Mandelbox) for auto-SDF flight speed, Fly->Orbit probing,
-/// and headless --self-test verification.
+/// DoF auto-focus, and headless --self-test verification.
 /// </summary>
 public static class MandelbulbMath
 {
@@ -122,6 +175,46 @@ public static class MandelbulbMath
             return EstimateMandelbox(pos, p, out orbitTrap);
 
         return EstimateMandelbulb(pos, p, out orbitTrap);
+    }
+
+    /// <summary>
+    /// Sphere-traces a ray to find the surface distance (used for Fly->Orbit pivoting and DoF auto-focus).
+    /// </summary>
+    public static float ProbeRayDistance(Vector3 origin, Vector3 forward, in MandelbulbParams p)
+    {
+        float boundR = p.BoundingRadius;
+        float maxProbe = MathF.Max(6.0f, boundR * 2.6f);
+        float t = 0.002f;
+        float stepScale = p.Shape == BulbShape.Mandelbox ? 0.80f : 0.85f;
+        float hitEps = p.Shape == BulbShape.Mandelbox ? 1.5e-3f : 5e-4f;
+
+        for (int i = 0; i < 120; i++)
+        {
+            float d = EstimateDistance(origin + forward * t, p);
+            if (d < hitEps)
+                return Math.Clamp(t, (float)MandelbulbParams.DofFocusMin, (float)MandelbulbParams.DofFocusMax);
+            t += MathF.Max(d * stepScale, 0.0015f);
+            if (t > maxProbe)
+                break;
+        }
+
+        float toOrigin = origin.Length();
+        float fallback = p.Shape == BulbShape.Mandelbox ? 10.0f : 2.0f;
+        return Math.Clamp(toOrigin > 0.2f && toOrigin < maxProbe ? toOrigin : fallback, 0.25f, maxProbe);
+    }
+
+    /// <summary>
+    /// Generates a low-discrepancy golden-angle Vogel disk sample inside the unit circle for DoF bokeh.
+    /// </summary>
+    public static Vector2 SampleVogelDisk(int index, int count)
+    {
+        if (count <= 1)
+            return Vector2.Zero;
+
+        const float goldenAngle = 2.39996323f; // pi * (3 - sqrt(5))
+        float r = MathF.Sqrt((index + 0.5f) / count);
+        float theta = index * goldenAngle;
+        return new Vector2(r * MathF.Cos(theta), r * MathF.Sin(theta));
     }
 
     static float EstimateMandelbulb(Vector3 pos, in MandelbulbParams p, out float orbitTrap)
@@ -184,12 +277,10 @@ public static class MandelbulbMath
 
         for (int i = 0; i < p.Iterations; i++)
         {
-            // Box fold
             zx = Math.Clamp(zx, -foldLimit, foldLimit) * 2.0 - zx;
             zy = Math.Clamp(zy, -foldLimit, foldLimit) * 2.0 - zy;
             zz = Math.Clamp(zz, -foldLimit, foldLimit) * 2.0 - zz;
 
-            // Sphere fold
             double r2 = zx * zx + zy * zy + zz * zz;
             if (r2 < trapMin) trapMin = r2;
             double ax = Math.Min(Math.Abs(zx), Math.Min(Math.Abs(zy), Math.Abs(zz)));
